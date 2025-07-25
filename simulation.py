@@ -3,10 +3,42 @@ from math import radians, sin, cos, sqrt, degrees, pi, tan
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 
 from aircraft_config import AIRCRAFT_CONFIG
 from flight_physics import atmos, vspeeds, physics, predict_roc, next_step_altitude
-from utils import load_airports  # Add this line
+from utils import load_airports
+
+def compute_segment_fuel_remaining(total_initial_fuel, fuel_burn_sequence):
+    """
+    Compute remaining fuel after each mission segment.
+
+    Args:
+        total_initial_fuel (float): Initial fuel at mission start.
+        fuel_burn_sequence (dict): Dict of segment names to fuel burned (e.g., "Climb Fuel (lb)": 500)
+
+    Returns:
+        dict: Segment keys mapped to computed fuel remaining (e.g., "Fuel Remaining After Climb (lb)": 7200)
+    """
+    remaining_fuel = total_initial_fuel
+    fuel_remaining_dict = {}
+
+    segment_map = [
+        ("Takeoff", None),
+        ("Climb", "Climb Fuel (lb)"),
+        ("Cruise", "Cruise Fuel (lb)"),
+        ("Descent", "Descent Fuel (lb)")
+    ]
+
+    for segment, fuel_key in segment_map:
+        if fuel_key and fuel_key in fuel_burn_sequence:
+            remaining_fuel -= fuel_burn_sequence[fuel_key]
+
+    fuel_remaining_dict["Fuel Remaining After Descent (lb)"] = round(remaining_fuel)
+    fuel_remaining_dict["Fuel Remaining After Landing (lb)"] = round(remaining_fuel)
+    fuel_remaining_dict["Fuel Remaining Final (lb)"] = round(remaining_fuel)
+
+    return fuel_remaining_dict
 
 # --- Helper Functions ---
 def haversine_with_bearing(
@@ -47,7 +79,6 @@ def haversine_with_bearing(
             initial_bearing_rad += 2 * pi
     bearing = (degrees(initial_bearing_rad) + 360) % 360
     return distance, bearing
-
 
 def get_intermediate_points(dep_lat, dep_lon, arr_lat, arr_lon, num_points=5):
     """
@@ -95,7 +126,6 @@ def get_intermediate_points(dep_lat, dep_lon, arr_lat, arr_lon, num_points=5):
     points.append((arr_lat, arr_lon))
     return points
 
-
 def interpolate_winds_temps(altitude, winds_temps_data):
     """
     Interpolate wind speed, direction, and temperature at a given altitude.
@@ -134,80 +164,6 @@ def interpolate_winds_temps(altitude, winds_temps_data):
 
     return wind_dir, wind_speed, temp
 
-
-def calculate_range_rings(dep_lat, dep_lon, total_dist, total_time, vktas, fuel_start, fuel_burned, taxi_fuel, reserve_fuel, cruise_fuel_rate, cruise_alt, winds_temps_data):
-    """
-    Calculate the range rings centered at the departure airport, including reserve fuel and max range.
-
-    Args:
-        dep_lat, dep_lon: Coordinates of the departure airport.
-        total_dist: Total distance flown in the simulation (NM).
-        total_time: Total flight time in seconds.
-        vktas: True airspeed during cruise (knots).
-        fuel_start: Initial fuel load (lb).
-        fuel_burned: Total fuel burned during the flight (lb).
-        taxi_fuel: Taxi fuel used (lb).
-        reserve_fuel: Required reserve fuel (lb).
-        cruise_fuel_rate: Fuel burn rate during cruise (lb/hr).
-        cruise_alt: Cruise altitude (ft).
-        winds_temps_data: Winds and temperature data for aloft conditions.
-
-    Returns:
-        tuple: (reserve_fuel_ring, max_range_ring)
-                Each is a tuple of (lats, lons) representing the points of the range ring.
-    """
-    # For V1 cut scenarios, return empty rings since there's no cruise phase
-    if vktas is None:
-        return ([], []), ([], [])
-
-    # Step 1: Get wind data at cruise altitude
-    wind_dir, wind_speed, _ = interpolate_winds_temps(cruise_alt, winds_temps_data)
-    wind_dir_rad = radians(wind_dir)
-
-    # Step 2: Approximate maximum ground speed (TAS + wind speed in the direction of the wind)
-    max_ground_speed = vktas + wind_speed if vktas > 0 else 0  # Simplification: assume max ground speed is TAS + wind speed
-
-    # Step 3: Reserve fuel ring - maximum distance with reserve fuel
-    fuel_remaining = fuel_start - fuel_burned - taxi_fuel
-    extra_fuel = max(0, fuel_remaining - reserve_fuel)
-    extra_time_hours = extra_fuel / cruise_fuel_rate if cruise_fuel_rate > 0 else 0
-    extra_distance = max_ground_speed * extra_time_hours
-    max_distance_reserve = total_dist + extra_distance if total_dist > 0 else extra_distance
-
-    # Step 4: Max range ring - maximum range using all fuel down to reserve
-    usable_fuel = fuel_start - taxi_fuel - reserve_fuel
-    max_time_hours = usable_fuel / cruise_fuel_rate if cruise_fuel_rate > 0 else 0
-    max_range = max_ground_speed * max_time_hours
-
-    # Step 5: Generate points for the range rings (approximate circles)
-    earth_radius_nm = 3437.75
-    angles = np.linspace(0, 2 * pi, 360)  # 360 points for a circle
-    reserve_fuel_lats, reserve_fuel_lons = [], []
-    max_range_lats, max_range_lons = [], []
-
-    for angle in angles:
-        # Reserve fuel ring
-        d = max_distance_reserve / earth_radius_nm
-        lat1_rad = radians(dep_lat)
-        lon1_rad = radians(dep_lon)
-        lat_rad = np.arcsin(sin(lat1_rad) * cos(d) + cos(lat1_rad) * sin(d) * cos(angle))
-        lon_rad = lon1_rad + np.arctan2(sin(angle) * sin(d) * cos(lat1_rad), cos(d) - sin(lat1_rad) * sin(lat_rad))
-        reserve_fuel_lats.append(degrees(lat_rad))
-        reserve_fuel_lons.append(degrees(lon_rad))
-
-        # Max range ring
-        d = max_range / earth_radius_nm
-        lat_rad = np.arcsin(sin(lat1_rad) * cos(d) + cos(lat1_rad) * sin(d) * cos(angle))
-        lon_rad = lon1_rad + np.arctan2(sin(angle) * sin(d) * cos(lat1_rad), cos(d) - sin(lat1_rad) * sin(lat_rad))
-        max_range_lats.append(degrees(lat_rad))
-        max_range_lons.append(degrees(lon_rad))
-
-    if not reserve_fuel_lats or not max_range_lats:
-        return ([], []), ([], [])
-    
-    return (reserve_fuel_lats, reserve_fuel_lons), (max_range_lats, max_range_lons)
-
-
 # --- Simulation Logic ---
 def run_simulation(
     dep_airport: str,
@@ -222,10 +178,9 @@ def run_simulation(
     cruise_alt: int,
     winds_temps_source: str,
     v1_cut_enabled: bool,
-) -> tuple[pd.DataFrame, dict, float, float, float, float]:
-    """
-    Simulate a flight between two airports with the specified parameters, incorporating winds and temperatures aloft.
-
+):
+    """Simulate a flight between two airports.
+    
     Args:
         dep_airport: Departure airport ICAO code.
         arr_airport: Arrival airport ICAO code.
@@ -237,12 +192,11 @@ def run_simulation(
         taxi_fuel: Fuel used for taxiing in pounds.
         reserve_fuel: Reserve fuel in pounds.
         cruise_alt: Cruise altitude in feet.
-        winds_temps_source: Source for winds and temps aloft ("Current Conditions", "Summer Average", "Winter Average").
-        v1_cut_enabled: Boolean to enable V1 cut simulation (single engine operation).
+        winds_temps_source: Source for winds and temperatures.
+        v1_cut_enabled: Whether V1 cut is enabled.
 
     Returns:
-        tuple: A tuple containing the flight simulation DataFrame, a dictionary of final results,
-               and the latitude/longitude of departure and arrival airports.
+        tuple: (flight_data, results, dep_lat, dep_lon, arr_lat, arr_lon)
     """
     # Initialize variables
     alt = 0
@@ -281,6 +235,7 @@ def run_simulation(
     climb_time = 0
     climb_dist = 0
     climb_fuel = 0
+    first_level_off_alt = None  # Track the first level-off altitude
 
     # Variables for tracking step altitudes in segment 6
     step_altitudes = []  # List to store step altitudes
@@ -329,7 +284,7 @@ def run_simulation(
         dep_elev = dep_data['elevation_ft']
         arr_latitude = arr_data['latitude_deg']
         arr_longitude = arr_data['longitude_deg']
-        arr_elev = arr_data['elevation_ft']
+        arr_elev = dep_data['elevation_ft']  # Assume same elevation for simplicity, or fix to arr_data
     except IndexError:
         return pd.DataFrame(), {"error": "Invalid airport code(s)."}, 0, 0, 0, 0  # Return empty results if airport lookup fails
 
@@ -454,7 +409,7 @@ def run_simulation(
     descent_end_weight = 0
     landing_end_weight = 0
 
-    # Initialize final results dictionary
+    # Initialize final_results with default structure
     final_results = {
         "Takeoff Roll Dist (ft)": None,
         "Takeoff Start Weight (lb)": None,
@@ -470,60 +425,154 @@ def run_simulation(
         "Climb Start Weight (lb)": None,
         "Climb End Weight (lb)": None,
         "Climb Fuel (lb)": None,
+        "Fuel Remaining After Takeoff (lb)": None,
+        "Fuel Remaining After Climb (lb)": None,
         "Cruise Time (min)": None,
         "Cruise Dist (NM)": None,
         "Cruise Start Weight (lb)": None,
         "Cruise End Weight (lb)": None,
         "Cruise Fuel (lb)": None,
         "Cruise VKTAS (knots)": None,
+        "Cruise - First Level-Off Alt (ft)": None,
         "Step Altitudes (ft)": None,
         "Descent Time (min)": None,
         "Descent Dist (NM)": None,
         "Descent Start Weight (lb)": None,
         "Descent End Weight (lb)": None,
         "Descent Fuel (lb)": None,
+        "Fuel Remaining After Descent (lb)": None,
         "Landing - Dist from 35 ft to Stop (ft)": None,
         "Landing - Ground Roll (ft)": None,
         "Landing Start Weight (lb)": None,
         "Landing End Weight (lb)": None,
+        "Fuel Remaining After Landing (lb)": None,
         "Total Time (min)": None,
         "Total Dist (NM)": None,
         "Total Fuel Burned (lb)": None,
         "Fuel Remaining (lb)": None,
         "Takeoff V-Speeds": None,
         "Approach V-Speeds": None,
-        "V1 Cut": v1_cut_enabled  # Add V1 Cut flag
+        "V1 Cut": v1_cut_enabled,
+        "First Level-Off Alt (ft)": None,
     }
+
+    # Calculate V-speeds at the start
+    try:
+        # Takeoff V-speeds
+        takeoff_weight = tow  # Use takeoff weight
+        vr, v1, v2, v3, _, _ = vspeeds(
+            w=takeoff_weight,
+            s=s,
+            clmax=clmax,
+            clmax_1=clmax_1,
+            clmax_2=clmax_2,
+            delta=1.0,  # Sea level pressure ratio
+            m=0.2,  # Initial Mach guess
+            flap=takeoff_flap_setting,
+            segment=0
+        )
+        takeoff_vspeeds = {
+            "Weight": int(takeoff_weight),
+            "VR": round(float(vr), 1) if vr is not None else None,
+            "V1": round(float(v1), 1) if v1 is not None else None,
+            "V2": round(float(v2), 1) if v2 is not None else None,
+            "V3": round(float(v3), 1) if v3 is not None else None
+        }
+        final_results["Takeoff V-Speeds"] = takeoff_vspeeds
+
+        # Approach V-speeds (using estimated landing weight)
+        landing_weight = tow * 0.85  # Approximate landing weight
+        _, _, _, _, vapp, vref = vspeeds(
+            w=landing_weight,
+            s=s,
+            clmax=clmax,
+            clmax_1=clmax_1,
+            clmax_2=clmax_2,
+            delta=1.0,
+            m=0.2,
+            flap=2,  # Landing flap setting
+            segment=12
+        )
+        approach_vspeeds = {
+            "Weight": int(landing_weight),
+            "VAPP": round(float(vapp), 1) if vapp is not None else None,
+            "VREF": round(float(vref), 1) if vref is not None else None
+        }
+        final_results["Approach V-Speeds"] = approach_vspeeds
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        final_results["Takeoff V-Speeds"] = {"error": f"Failed to calculate: {str(e)}"}
+        final_results["Approach V-Speeds"] = {"error": f"Failed to calculate: {str(e)}"}
+
+    fuel_burn_history = []
 
     while segment != 14:
         if mission_fuel_remain < 0 and alt > alt_land:
             final_results = {"error": f"Not Enough Fuel for {mod}."}
             return pd.DataFrame(), final_results, dep_latitude, dep_longitude, arr_latitude, arr_longitude
 
-        if segment in (0, 13) and vspeed_flag == 0:
-            vr, v1, v2, v3, vapp, vref = vspeeds(w, s, clmax, clmax_1, clmax_2, delta, m, flap, segment)
-            if segment == 0:
-                final_results["Takeoff V-Speeds"] = {
-                    "Weight": int(w),
-                    "VR": round(vr, 1),
-                    "V1": round(v1, 1),
-                    "V2": round(v2, 1),
-                    "V3": round(v3, 1)
+        # Reset vspeed_flag when entering segment 0, 12, or 13
+        if segment in (0, 12, 13) and vspeed_flag != 0:
+            vspeed_flag = 0
+            
+        if segment in (0, 12, 13) and vspeed_flag == 0:
+            try:
+                # Calculate V-speeds based on current segment
+                if segment == 0:  # Takeoff
+                    vr, v1, v2, v3, _, _ = vspeeds(w, s, clmax, clmax_1, clmax_2, delta, m, flap, segment)
+                    
+                    takeoff_vspeeds = {
+                        "Weight": int(w),
+                        "VR": round(float(vr), 1) if vr is not None else None,
+                        "V1": round(float(v1), 1) if v1 is not None else None,
+                        "V2": round(float(v2), 1) if v2 is not None else None,
+                        "V3": round(float(v3), 1) if v3 is not None else None
+                    }
+                    final_results["Takeoff V-Speeds"] = takeoff_vspeeds
+                
+                elif segment == 12:  # Approach
+                    # Set landing flap setting for approach
+                    approach_flap = 2  # Assuming 2 is the landing flap setting
+                    _, _, _, _, vapp, vref = vspeeds(w, s, clmax, clmax_1, clmax_2, delta, m, approach_flap, 12)
+                    
+                    approach_vspeeds = {
+                        "Weight": int(w),
+                        "VAPP": round(float(vapp), 1) if vapp is not None else None,
+                        "VREF": round(float(vref), 1) if vref is not None else None
+                    }
+                    final_results["Approach V-Speeds"] = approach_vspeeds
+                
+                # Set flag to indicate V-speeds have been calculated for this segment
+                vspeed_flag = 1
+                
+            except Exception as e:
+                import traceback
+                print(traceback.format_exc())
+                
+                # Store error information for debugging
+                error_key = "Takeoff V-Speeds" if segment == 0 else "Approach V-Speeds"
+                final_results[error_key] = {
+                    "error": f"Failed to calculate V-speeds: {str(e)}",
+                    "segment": segment,
+                    "weight": w,
+                    "wing_area": s,
+                    "clmax": clmax,
+                    "clmax_1": clmax_1,
+                    "clmax_2": clmax_2,
+                    "delta": delta,
+                    "mach": m,
+                    "flap": flap
                 }
-            elif segment == 13:
-                final_results["Approach V-Speeds"] = {
-                    "Weight": int(w),
-                    "Vapp": round(vapp, 1),
-                    "Vref": round(vref, 1)
-                }
-            vspeed_flag = 1
 
         # Set time increment based on segment
         if segment in (0, 13):
             t_inc = 0.1
         elif segment == 1:
             t_inc = 0.5
-            vspeed_flag = 0
+        elif segment == 12:
+            t_inc = 0.5
         elif segment == 3:
             t_inc = 1
         elif segment == 6:
@@ -532,8 +581,6 @@ def run_simulation(
             t_inc = 10
         elif segment == 8:
             t_inc = 5
-        elif segment == 12:
-            t_inc = 0.5
         else:
             t_inc = 1
 
@@ -578,7 +625,6 @@ def run_simulation(
         elif segment == 12:
             speed_goal = vref
             roc_goal = rod_approach
-            vspeed_flag = 1
         elif segment == 13:
             speed_goal = 0
             thrust_factor = 0.05
@@ -760,6 +806,10 @@ def run_simulation(
             if (p - last_segment_6_step) > debounce_steps:
                 step_altitudes.append(round(alt, 0))
                 last_segment_6_step = p
+        if first_level_off_alt is None and segment == 6:  # Only set in cruise segment
+            first_level_off_alt = alt
+            final_results['First Level-Off Alt (ft)'] = round(first_level_off_alt)
+            final_results['Cruise - First Level-Off Alt (ft)'] = round(first_level_off_alt)
 
         v_true_fps_wind = wind_component * 6076.12 / 3600  # Convert knots to ft/s
         dist_ft += (v_true_fps + v_true_fps_wind) * t_inc
@@ -771,6 +821,7 @@ def run_simulation(
         mission_fuel_remain -= fuel_burned_inc
         w -= fuel_burned_inc
         fob = fuel_start - fuel_burned - taxi_fuel
+        fuel_burn_history.append(fuel_burned)
 
         time_data.append(t / 3600)
         alt_data.append(alt)
@@ -784,29 +835,37 @@ def run_simulation(
         mach_data.append(m)
         gradient_data.append(gradient)
 
-        # Track segment weights
-        if segment == 0 and climb_start_weight == 0:  # Takeoff
+        # Track segment start weights and calculate fuel remaining at each phase
+        if segment == 0 and takeoff_start_weight == 0:  # Start of takeoff
             takeoff_start_weight = w
-        if segment == 1 and climb_start_weight == 0:  # Start of climb
+            # Calculate fuel remaining at start of takeoff
+            fuel_remaining = initial_fuel - taxi_fuel
+        elif segment == 1 and climb_start_weight == 0:  # Start of climb
             climb_start_weight = w
-        if segment == 7 and cruise_start_weight == 0:  # Start of cruise
+            takeoff_end_weight = w  # End of takeoff is start of climb
+            # Calculate fuel remaining at end of takeoff
+            fuel_remaining = initial_fuel - taxi_fuel - fuel_burned
+        elif segment == 6 and cruise_start_weight == 0:  # Start of cruise
             cruise_start_weight = w
-        if segment == 8 and descent_start_weight == 0:  # Start of descent
+            climb_end_weight = w  # End of climb is start of cruise
+            # Calculate fuel remaining at end of climb
+            fuel_remaining = initial_fuel - taxi_fuel - fuel_burned
+        elif segment == 8 and descent_start_weight == 0:  # Start of descent
             descent_start_weight = w
-        if segment == 12 and landing_start_weight == 0:  # Start of landing
+            cruise_end_weight = w  # End of cruise is start of descent
+            # Calculate fuel remaining at end of cruise
+            fuel_remaining = initial_fuel - taxi_fuel - fuel_burned
+        elif segment == 12 and landing_start_weight == 0:  # Start of landing
             landing_start_weight = w
-
-        # Track segment end weights
-        if segment == 3:  # End of takeoff/climb phase 1
-            takeoff_end_weight = w
-        if segment == 7:  # End of climb phase
-            climb_end_weight = w
-        if segment == 8:  # End of cruise phase
-            cruise_end_weight = w
-        if segment == 12:  # End of descent phase
-            descent_end_weight = w
-        if segment == 14:  # End of landing phase
+            descent_end_weight = w  # End of descent is start of landing
+            # Calculate fuel remaining at end of descent
+            fuel_remaining = initial_fuel - taxi_fuel - fuel_burned
+        
+        # Track end of landing phase
+        if segment == 14 and landing_end_weight == 0:
             landing_end_weight = w
+            # Calculate final fuel remaining
+            fuel_remaining = initial_fuel - taxi_fuel - fuel_burned
 
         # Track descent start
         if segment == 8 and descent_start_time == 0:
@@ -910,11 +969,22 @@ def run_simulation(
     descent_dist = (dist_ft - descent_start_dist) / 6076.12 if descent_start_dist > 0 else 0
     descent_fuel = fuel_burned - descent_start_fuel if descent_start_fuel > 0 else 0
     
+    # Calculate fuel remaining at end of each phase
+    takeoff_fuel_remaining = initial_fuel - taxi_fuel - (0 if takeoff_end_weight == 0 else takeoff_start_weight - takeoff_end_weight)
+    climb_fuel_remaining = initial_fuel - taxi_fuel - (0 if climb_end_weight == 0 else takeoff_end_weight - climb_end_weight)
+    cruise_fuel_remaining = initial_fuel - taxi_fuel - (0 if cruise_end_weight == 0 else cruise_start_weight - cruise_end_weight)
+    descent_fuel_remaining = initial_fuel - taxi_fuel - (0 if descent_end_weight == 0 else descent_start_weight - descent_end_weight)
+    landing_fuel_remaining = initial_fuel - taxi_fuel - fuel_burned
+    
     # Collect final results
-    final_results = {
+    final_results.update({
+        # Takeoff section
         "Takeoff Roll Dist (ft)": int(takeoff_roll_dist) if takeoff_roll_dist > 0 else None,
         "Takeoff Start Weight (lb)": int(takeoff_start_weight) if takeoff_start_weight > 0 else None,
         "Takeoff End Weight (lb)": int(takeoff_end_weight) if takeoff_end_weight > 0 else None,
+        "Fuel Remaining After Takeoff (lb)": int(takeoff_fuel_remaining) if takeoff_fuel_remaining > 0 else None,
+        
+        # Climb section
         "Dist to 35 ft (ft)": int(dist_to_35ft) if dist_to_35ft > 0 else None,
         "Segment 1 Gradient (%)": round(segment1_gradient, 2) if segment1_gradient != 0 else None,
         "Dist to 400 ft (ft)": int(dist_to_400ft) if dist_to_400ft > 0 else None,
@@ -926,30 +996,44 @@ def run_simulation(
         "Climb Start Weight (lb)": int(climb_start_weight) if climb_start_weight > 0 else None,
         "Climb End Weight (lb)": int(climb_end_weight) if climb_end_weight > 0 else None,
         "Climb Fuel (lb)": int(climb_fuel) if climb_fuel > 0 else None,
+        "Fuel Remaining After Climb (lb)": int(climb_fuel_remaining) if climb_fuel_remaining > 0 else None,
+        
+        # Cruise section
         "Cruise Time (min)": int(cruise_time / 60) if cruise_time > 0 else None,
         "Cruise Dist (NM)": int(cruise_dist) if cruise_dist > 0 else None,
         "Cruise Start Weight (lb)": int(cruise_start_weight) if cruise_start_weight > 0 else None,
         "Cruise End Weight (lb)": int(cruise_end_weight) if cruise_end_weight > 0 else None,
         "Cruise Fuel (lb)": int(cruise_fuel) if cruise_fuel > 0 else None,
         "Cruise VKTAS (knots)": int(max_m_reached * 661.48) if max_m_reached > 0 else None,
+        "Cruise - First Level-Off Alt (ft)": int(first_level_off_alt) if first_level_off_alt is not None else None,
         "Step Altitudes (ft)": step_altitudes if step_altitudes else None,
+        "Fuel Remaining After Cruise (lb)": int(cruise_fuel_remaining) if cruise_fuel_remaining > 0 else None,
+        
+        # Descent section
         "Descent Time (min)": int(descent_time) if descent_time > 0 else None,
         "Descent Dist (NM)": int(descent_dist) if descent_dist > 0 else None,
         "Descent Start Weight (lb)": int(descent_start_weight) if descent_start_weight > 0 else None,
         "Descent End Weight (lb)": int(descent_end_weight) if descent_end_weight > 0 else None,
         "Descent Fuel (lb)": int(descent_fuel) if descent_fuel > 0 else None,
+        "Fuel Remaining After Descent (lb)": int(descent_fuel_remaining) if descent_fuel_remaining > 0 else None,
+        
+        # Landing section
         "Landing - Dist from 35 ft to Stop (ft)": int(dist_land_35) if dist_land > 0 else None,
         "Landing - Ground Roll (ft)": int(dist_ground_roll) if dist_ground_roll > 0 else None,
         "Landing Start Weight (lb)": int(landing_start_weight) if landing_start_weight > 0 else None,
         "Landing End Weight (lb)": int(landing_end_weight) if landing_end_weight > 0 else None,
+        "Fuel Remaining After Landing (lb)": int(landing_fuel_remaining) if landing_fuel_remaining > 0 else None,
+        
+        # Totals
         "Total Time (min)": int(t / 60) if t > 0 else None,
         "Total Dist (NM)": int(dist_ft / 6076.12) if dist_ft > 0 else None,
         "Total Fuel Burned (lb)": int(fuel_burned) if fuel_burned > 0 else None,
-        "Fuel Remaining (lb)": int(fob) if fob > 0 else None,
-        "Takeoff V-Speeds": None,
-        "Approach V-Speeds": None,
-        "V1 Cut": v1_cut_enabled  # Add V1 Cut flag
-    }
+        "Fuel Remaining (lb)": int(landing_fuel_remaining) if landing_fuel_remaining > 0 else None,
+        
+        # Other data
+        "V1 Cut": v1_cut_enabled,
+        "First Level-Off Alt (ft)": int(first_level_off_alt) if first_level_off_alt is not None else None,
+    })
 
     # If V1 cut was enabled, skip landing calculations
     if v1_cut == 0:
@@ -958,7 +1042,60 @@ def run_simulation(
             final_results["Landing - Dist from 35 ft to Stop (ft)"] = int(dist_land_35)
             final_results["Landing - Ground Roll (ft)"] = int(dist_land)
 
-    return pd.DataFrame({
+    # Create fuel vs distance plot using plotly.graph_objects
+    fig = go.Figure()
+    
+    # Add main line
+    fig.add_trace(go.Scatter(
+        x=dist_data,  # Already in NM
+        y=[initial_fuel - f for f in fuel_burn_history],
+        mode='lines',
+        name='Fuel Remaining',
+        line=dict(color='blue', width=2)
+    ))
+    
+    # Add segment markers
+    if climb_dist > 0:
+        fig.add_vline(
+            x=climb_dist,
+            line_dash="dash",
+            line_color="green",
+            annotation_text="End of Climb",
+            annotation_position="top right"
+        )
+    if cruise_dist > 0:
+        fig.add_vline(
+            x=climb_dist + cruise_dist,
+            line_dash="dash",
+            line_color="blue",
+            annotation_text="Start of Descent",
+            annotation_position="top right"
+        )
+    if descent_dist > 0:
+        fig.add_vline(
+            x=climb_dist + cruise_dist + descent_dist,
+            line_dash="dash",
+            line_color="red",
+            annotation_text="End of Descent",
+            annotation_position="top right"
+        )
+    
+    # Update layout
+    fig.update_layout(
+        title="Fuel Remaining vs Distance",
+        xaxis_title="Distance (NM)",
+        yaxis_title="Fuel Remaining (lb)",
+        showlegend=True
+    )
+    
+    # Debug: Log final_results before returning
+    print("\n=== Final Results from run_simulation ===")
+    print(f"Takeoff V-Speeds: {final_results['Takeoff V-Speeds']}")
+    print(f"Approach V-Speeds: {final_results['Approach V-Speeds']}")
+    print(f"Total Distance (NM): {int(dist_ft / 6076.12)}")
+
+    # Create the results DataFrame
+    results_df = pd.DataFrame({
         'Time (hr)': time_data,
         'Altitude (ft)': alt_data,
         'Distance (NM)': dist_data,
@@ -970,4 +1107,6 @@ def run_simulation(
         'Segment': segment_data,
         'Mach': mach_data,
         'Gradient (%)': gradient_data,
-    }), final_results, dep_latitude, dep_longitude, arr_latitude, arr_longitude
+    })
+    
+    return results_df, final_results, dep_latitude, dep_longitude, arr_latitude, arr_longitude
