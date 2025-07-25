@@ -98,63 +98,45 @@ def drag_calc(w, cdo, dcdo_flap1, dcdo_flap2, dcdo_flap3, dcdo_gear, m, k, cl, q
 
 
 def vspeeds(w, s, clmax, clmax_1, clmax_2, delta, m, flap, segment):
-    print(f"\n--- DEBUG: vspeeds function called with ---")
-    print(f"w (weight): {w}")
-    print(f"s (wing area): {s}")
-    print(f"clmax: {clmax}, clmax_1: {clmax_1}, clmax_2: {clmax_2}")
-    print(f"delta: {delta}, m (Mach): {m}")
-    print(f"flap: {flap}, segment: {segment}")
-    
     try:
         # Calculate clmax_factor
         clmax_factor = 7.432 * m ** 6 - 12.59 * m ** 5 + 5.0847 * m ** 4 + 0.7356 * m ** 3 - 0.9942 * m ** 2 + 0.1147 * m + 0.9994
-        print(f"clmax_factor: {clmax_factor}")
         
-        # Calculate correction factor
-        correction = 1 + 1/8 * (1 - delta) * m ** 2 + 3/640 * (1 - 10 * delta + 9 * delta ** 2) * m ** 4
-        print(f"correction: {correction}")
-        
-        # Calculate denominator for takeoff speeds
-        if flap == 1 and segment in [0, 1, 2]:
-            denom = clmax_1 * s * clmax_factor
-            print(f"Using clmax_1 for takeoff: {clmax_1}")
+        # Calculate clmax_adjusted based on flap setting
+        if flap == 0:  # Clean
+            clmax_adjusted = clmax * clmax_factor
+        elif flap == 1:  # Approach
+            clmax_adjusted = clmax_1 * clmax_factor
+        elif flap == 2:  # Landing
+            clmax_adjusted = clmax_2 * clmax_factor
         else:
-            denom = clmax * s * clmax_factor
-            print(f"Using clmax for takeoff: {clmax}")
+            clmax_adjusted = clmax * clmax_factor
+
+        # Calculate V-speeds
+        vs1g = sqrt(295 * (w / (delta * s * clmax_adjusted)))
+        vs = vs1g / 1.05
+        
+        # Calculate VR, V1, V2, V3
+        vr = 1.05 * vs
+        v1 = 1.1 * vs
+        v2 = 1.2 * vs
+        v3 = 1.3 * vs
+        
+        # Calculate VAPP and VREF
+        if segment in (11, 12):  # Approach and landing segments
+            correction = 1 + (0.01 * (w / 1000 - 100) / 10)  # Small correction factor
+            approach_denom = delta * s * clmax_1 * clmax_factor
+            landing_denom = delta * s * clmax_2 * clmax_factor
             
-        print(f"denominator: {denom}")
-        
-        # Calculate V-speeds with error checking
-        if denom <= 0:
-            raise ValueError(f"Invalid denominator in V-speeds calculation: {denom}")
+            vapp = 20 + (1.3 * sqrt(295 * (w / approach_denom))) * correction
+            vref = (1.3 * sqrt(295 * (w / landing_denom))) * correction
+        else:
+            vapp = None
+            vref = None
             
-        sqrt_term = sqrt(295 * (w / denom))
-        print(f"sqrt_term: {sqrt_term}")
-        
-        # Calculate takeoff speeds
-        vr = 1.05 * sqrt_term * correction
-        v1 = 1.1 * sqrt_term * correction
-        v2 = 1.2 * sqrt_term * correction
-        v3 = 1.3 * sqrt_term * correction
-        
-        # Calculate approach speeds
-        approach_denom = clmax_1 * s * clmax_factor
-        landing_denom = clmax_2 * s * clmax_factor
-        
-        if approach_denom <= 0 or landing_denom <= 0:
-            raise ValueError(f"Invalid denominator in approach/landing calculation: approach={approach_denom}, landing={landing_denom}")
-            
-        vapp = 20 + (1.3 * sqrt(295 * (w / approach_denom))) * correction
-        vref = (1.3 * sqrt(295 * (w / landing_denom))) * correction
-        
-        print(f"Calculated V-speeds - VR: {vr}, V1: {v1}, V2: {v2}, V3: {v3}, Vapp: {vapp}, Vref: {vref}")
-        
         return vr, v1, v2, v3, vapp, vref
         
     except Exception as e:
-        print(f"ERROR in vspeeds calculation: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
         # Return None values to indicate calculation failure
         return None, None, None, None, None, None
 

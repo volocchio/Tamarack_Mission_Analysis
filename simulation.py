@@ -459,9 +459,8 @@ def run_simulation(
     # Calculate V-speeds at the start
     try:
         # Takeoff V-speeds
-        takeoff_weight = tow  # Use takeoff weight
         vr, v1, v2, v3, _, _ = vspeeds(
-            w=takeoff_weight,
+            w=tow,
             s=s,
             clmax=clmax,
             clmax_1=clmax_1,
@@ -472,7 +471,7 @@ def run_simulation(
             segment=0
         )
         takeoff_vspeeds = {
-            "Weight": int(takeoff_weight),
+            "Weight": int(tow),
             "VR": round(float(vr), 1) if vr is not None else None,
             "V1": round(float(v1), 1) if v1 is not None else None,
             "V2": round(float(v2), 1) if v2 is not None else None,
@@ -480,31 +479,33 @@ def run_simulation(
         }
         final_results["Takeoff V-Speeds"] = takeoff_vspeeds
 
-        # Approach V-speeds (using estimated landing weight)
-        landing_weight = tow * 0.85  # Approximate landing weight
-        _, _, _, _, vapp, vref = vspeeds(
-            w=landing_weight,
-            s=s,
-            clmax=clmax,
-            clmax_1=clmax_1,
-            clmax_2=clmax_2,
-            delta=1.0,
-            m=0.2,
-            flap=2,  # Landing flap setting
-            segment=12
-        )
-        approach_vspeeds = {
-            "Weight": int(landing_weight),
-            "VAPP": round(float(vapp), 1) if vapp is not None else None,
-            "VREF": round(float(vref), 1) if vref is not None else None
+        # Initialize V-speeds that will be calculated during approach
+        vapp = None
+        vref = None
+        
+        # Add these to the results dictionary
+        final_results["Approach V-Speeds"] = {
+            "VAPP": "Will be calculated during approach",
+            "VREF": "Will be calculated during approach"
         }
-        final_results["Approach V-Speeds"] = approach_vspeeds
-
     except Exception as e:
         import traceback
         print(traceback.format_exc())
-        final_results["Takeoff V-Speeds"] = {"error": f"Failed to calculate: {str(e)}"}
-        final_results["Approach V-Speeds"] = {"error": f"Failed to calculate: {str(e)}"}
+        
+        # Store error information for debugging
+        error_key = "Takeoff V-Speeds"
+        final_results[error_key] = {
+            "error": f"Failed to calculate: {str(e)}",
+            "segment": segment,
+            "weight": w,
+            "wing_area": s,
+            "clmax": clmax,
+            "clmax_1": clmax_1,
+            "clmax_2": clmax_2,
+            "delta": 1.0,
+            "mach": 0.2,
+            "flap": flap
+        }
 
     fuel_burn_history = []
 
@@ -588,13 +589,17 @@ def run_simulation(
         speed_goal = 0
         roc_goal = 0
         if segment == 0:
-            speed_goal = vr
+            speed_goal = vr if vr is not None else 100  # Provide a default if vr is None
+            roc_goal = 0
         elif segment == 1:
-            speed_goal = v1
+            speed_goal = v1 if v1 is not None else 100  # Provide a default if v1 is None
+            roc_goal = 0
         elif segment == 2:
-            speed_goal = v2
+            speed_goal = v2 if v2 is not None else 120  # Provide a default if v2 is None
+            roc_goal = 0
         elif segment == 3:
-            speed_goal = v3
+            speed_goal = v2 if v2 is not None else 120  # Provide a default if v2 is None
+            roc_goal = roc_min
         elif segment == 4:
             speed_goal = v_climb
             roc_goal = roc_min
@@ -602,10 +607,8 @@ def run_simulation(
             speed_goal = m_climb
             roc_goal = roc_min
         elif segment in (6, 7):
-            if alt <= 10100:
-                speed_goal = v_u_10k
-            else:
-                speed_goal = m_cruise
+            speed_goal = v_u_10k if alt <= 10100 else m_cruise
+            roc_goal = 0
         elif segment == 8:
             if alt <= 10100:
                 speed_goal = v_u_10k
@@ -614,23 +617,24 @@ def run_simulation(
                 speed_goal = m_descent
                 roc_goal = rod
         elif segment == 9:
-            speed_goal = v_descent
+            speed_goal = v_descent if v_descent is not None else 200  # Default descent speed
             roc_goal = rod
         elif segment == 10:
             speed_goal = v_u_10k
             roc_goal = rod_u_10k
-        elif segment == 10.5:
-            speed_goal = v_u_10k
-            roc_goal = rod_u_10k
         elif segment == 11:
-            speed_goal = vapp
+            speed_goal = vapp if vapp is not None else 130  # Default approach speed
             roc_goal = rod_approach
         elif segment == 12:
-            speed_goal = vref
+            speed_goal = vref if vref is not None else 120  # Default landing speed
             roc_goal = rod_approach
         elif segment == 13:
             speed_goal = 0
             thrust_factor = 0.05
+
+        # Ensure speed_goal is not None before passing to physics
+        if speed_goal is None:
+            speed_goal = 100  # Fallback default speed
 
         # Find the closest route point to the current distance
         current_dist = dist_ft / 6076.12  # Convert to NM
@@ -690,7 +694,7 @@ def run_simulation(
         if segment in (0, 6, 7, 13):
             tx = 0
             gamma = 0
-        elif segment in (8, 9, 10, 10.5, 11, 12):
+        elif segment in (8, 9, 10, 11, 12):
             gamma = roc_goal / 60 / v_true_fps * (6076.12 / 3600)
             if round(vkias) >= round(speed_goal) and thrust > drag:
                 if w * sin(gamma) + drag < 100:
@@ -897,7 +901,7 @@ def run_simulation(
         p += 1
         last_segment = segment
 
-        if vkias >= vr and segment == 0:
+        if vr is not None and vkias >= vr and segment == 0:
             segment = 1
             takeoff_roll_dist = dist_ft  # Capture distance at end of segment 0
             if v1_cut == 1:
@@ -911,7 +915,7 @@ def run_simulation(
             climb_time = t
             climb_fuel_flag = 1
             climb_dist = dist_ft / 6076.12
-        if vkias >= v1 and segment == 1:
+        if v1 is not None and vkias >= v1 and segment == 1:
             segment = 2
         if alt - alt_to >= 400 and segment == 2:
             segment = 3
@@ -939,46 +943,11 @@ def run_simulation(
             cruise_dist = (dist_ft / 6076.12) - climb_dist
             cruise_fuel = fuel_burned - climb_fuel
             max_m_reached = m
-        if vkias > v_descent and segment == 8:
+        if v_descent is not None and vkias > v_descent and segment == 8:
             segment = 9
         if alt < 10000 and segment in (8, 9):
             segment = 10
-        if (alt - alt_land) <= 5000 and segment == 10:
-            segment = 10.5
-            # Calculate final approach distances
-            current_gs = vktas + wind_speed  # Simplified ground speed calculation
-            
-            # Calculate distances for final approach segments
-            time_3000_to_1000 = 2000 / 700  # 2000 ft at 700 ft/min
-            dist_3000_to_1000 = (current_gs / 60) * time_3000_to_1000  # nm
-            
-            time_1000_to_35 = 1000 / 700  # 1000 ft at 700 ft/min
-            dist_1000_to_35 = (current_gs / 60) * time_1000_to_35  # nm
-            
-            total_final_approach_dist = dist_3000_to_1000 + dist_1000_to_35
-            
-            # Store the target distance where we want to be at 3000 ft AGL
-            correction_params = {
-                'target_3000ft_dist': total_distance - total_final_approach_dist,
-                'ground_speed': current_gs
-            }
-        if segment == 10.5:
-            # Calculate remaining distance and altitude to lose
-            dist_remaining = max(correction_params['target_3000ft_dist'] - dist_ft, 0.1)
-            alt_to_lose = alt - (alt_land + 3000)
-            
-            # Calculate required ROD (ft/min)
-            time_to_3000ft = (dist_remaining / correction_params['ground_speed']) * 60
-            required_rod = (alt_to_lose / time_to_3000ft) if time_to_3000ft > 0 else 0
-            
-            # Apply the calculated ROD
-            gamma = -np.radians(required_rod / 101.27)  # Convert to radians
-            
-            # Check if we've reached the 3000 ft point
-            if dist_ft >= correction_params['target_3000ft_dist']:
-                segment = 11
-                print(f"Established on final approach profile at {alt - alt_land:.0f} ft AGL")
-        if (alt - alt_land) <= 3000 and segment in (10, 10.5):
+        if alt - alt_land <= 3000 and segment == 10:
             segment = 11
         if alt - alt_land <= 1000 and segment == 11:
             segment = 12
