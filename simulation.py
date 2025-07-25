@@ -619,6 +619,9 @@ def run_simulation(
         elif segment == 10:
             speed_goal = v_u_10k
             roc_goal = rod_u_10k
+        elif segment == 10.5:
+            speed_goal = v_u_10k
+            roc_goal = rod_u_10k
         elif segment == 11:
             speed_goal = vapp
             roc_goal = rod_approach
@@ -687,7 +690,7 @@ def run_simulation(
         if segment in (0, 6, 7, 13):
             tx = 0
             gamma = 0
-        elif segment in (8, 9, 10, 11, 12):
+        elif segment in (8, 9, 10, 10.5, 11, 12):
             gamma = roc_goal / 60 / v_true_fps * (6076.12 / 3600)
             if round(vkias) >= round(speed_goal) and thrust > drag:
                 if w * sin(gamma) + drag < 100:
@@ -940,7 +943,42 @@ def run_simulation(
             segment = 9
         if alt < 10000 and segment in (8, 9):
             segment = 10
-        if alt - alt_land <= 3000 and segment == 10:
+        if (alt - alt_land) <= 5000 and segment == 10:
+            segment = 10.5
+            # Calculate final approach distances
+            current_gs = vktas + wind_speed  # Simplified ground speed calculation
+            
+            # Calculate distances for final approach segments
+            time_3000_to_1000 = 2000 / 700  # 2000 ft at 700 ft/min
+            dist_3000_to_1000 = (current_gs / 60) * time_3000_to_1000  # nm
+            
+            time_1000_to_35 = 1000 / 700  # 1000 ft at 700 ft/min
+            dist_1000_to_35 = (current_gs / 60) * time_1000_to_35  # nm
+            
+            total_final_approach_dist = dist_3000_to_1000 + dist_1000_to_35
+            
+            # Store the target distance where we want to be at 3000 ft AGL
+            correction_params = {
+                'target_3000ft_dist': total_distance - total_final_approach_dist,
+                'ground_speed': current_gs
+            }
+        if segment == 10.5:
+            # Calculate remaining distance and altitude to lose
+            dist_remaining = max(correction_params['target_3000ft_dist'] - dist_ft, 0.1)
+            alt_to_lose = alt - (alt_land + 3000)
+            
+            # Calculate required ROD (ft/min)
+            time_to_3000ft = (dist_remaining / correction_params['ground_speed']) * 60
+            required_rod = (alt_to_lose / time_to_3000ft) if time_to_3000ft > 0 else 0
+            
+            # Apply the calculated ROD
+            gamma = -np.radians(required_rod / 101.27)  # Convert to radians
+            
+            # Check if we've reached the 3000 ft point
+            if dist_ft >= correction_params['target_3000ft_dist']:
+                segment = 11
+                print(f"Established on final approach profile at {alt - alt_land:.0f} ft AGL")
+        if (alt - alt_land) <= 3000 and segment in (10, 10.5):
             segment = 11
         if alt - alt_land <= 1000 and segment == 11:
             segment = 12
