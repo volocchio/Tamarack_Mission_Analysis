@@ -425,15 +425,15 @@ if st.button("Run Simulation"):
                 f"{tow_f:,.0f}"
             ],
             'Max Weight (lb)': [
-                f"{bow_f:,.0f}",
-                f"{max_payload_f:,.0f}",
-                f"{max_fuel_f:,.0f}",
-                f"{reserve_fuel_default_f:,.0f}",
-                f"{taxi_fuel_default_f:,.0f}",
-                f"{mission_fuel_f:,.0f}",
-                f"{mzfw_f:,.0f}",
-                f"{mrw_f:,.0f}",
-                f"{mtow_f:,.0f}"
+                "",  # BOW - no max
+                f"{max_payload_f:,.0f}",  # Payload has max
+                f"{max_fuel_f:,.0f}",  # Initial Fuel has max
+                "",  # Reserve Fuel - no max
+                "",  # Taxi Fuel - no max
+                "",  # Mission Fuel - no max
+                f"{mzfw_f:,.0f}",  # ZFW has max
+                f"{mrw_f:,.0f}",  # Ramp Weight has max
+                f"{mtow_f:,.0f}"  # Takeoff Weight has max
             ]
         })
 
@@ -455,15 +455,15 @@ if st.button("Run Simulation"):
                 f"{tow_t:,.0f}"
             ],
             'Max Weight (lb)': [
-                f"{bow_t:,.0f}",
-                f"{max_payload_t:,.0f}",
-                f"{max_fuel_t:,.0f}",
-                f"{reserve_fuel_default_t:,.0f}",
-                f"{taxi_fuel_default_t:,.0f}",
-                f"{mission_fuel_t:,.0f}",
-                f"{mzfw_t:,.0f}",
-                f"{mrw_t:,.0f}",
-                f"{mtow_t:,.0f}"
+                "",  # BOW - no max
+                f"{max_payload_t:,.0f}",  # Payload has max
+                f"{max_fuel_t:,.0f}",  # Initial Fuel has max
+                "",  # Reserve Fuel - no max
+                "",  # Taxi Fuel - no max
+                "",  # Mission Fuel - no max
+                f"{mzfw_t:,.0f}",  # ZFW has max
+                f"{mrw_t:,.0f}",  # Ramp Weight has max
+                f"{mtow_t:,.0f}"  # Takeoff Weight has max
             ]
         })
 
@@ -474,17 +474,34 @@ if st.button("Run Simulation"):
         
         with col1:
             st.subheader("Flatwing Weight Status")
-            styled_df = weight_df.style.apply(
-                lambda x: ['background-color: #ffcccc' if float(x['Weight (lb)'].replace(',', '')) > float(x['Max Weight (lb)'].replace(',', '')) else '' for i in x],
-                axis=1
-            )
+            def highlight_exceeded(row):
+                weight = float(row['Weight (lb)'].replace(',', ''))
+                max_weight = row['Max Weight (lb)']
+                if max_weight and max_weight.strip():  # Only compare if max_weight is not empty
+                    try:
+                        max_weight_val = float(max_weight.replace(',', ''))
+                        if weight > max_weight_val:
+                            return ['background-color: #ffcccc'] * len(row)
+                    except (ValueError, AttributeError):
+                        pass
+                return [''] * len(row)
+
+            styled_df = weight_df.style.apply(highlight_exceeded, axis=1)
             st.table(styled_df)
             
             # Check for any exceeded weight limits
-            weight_exceeded = weight_df.apply(
-                lambda row: float(row['Weight (lb)'].replace(',', '')) > float(row['Max Weight (lb)'].replace(',', '')),
-                axis=1
-            ).any()
+            def is_weight_exceeded(row):
+                try:
+                    weight = float(row['Weight (lb)'].replace(',', ''))
+                    max_weight = row['Max Weight (lb)']
+                    if max_weight and max_weight.strip():
+                        max_weight_val = float(max_weight.replace(',', ''))
+                        return weight > max_weight_val
+                    return False
+                except (ValueError, AttributeError):
+                    return False
+            
+            weight_exceeded = weight_df.apply(is_weight_exceeded, axis=1).any()
             
             if weight_exceeded:
                 st.error("Weight limits exceeded! Please adjust the following:")
@@ -498,17 +515,34 @@ if st.button("Run Simulation"):
         
         with col2:
             st.subheader("Tamarack Weight Status")
-            styled_df_tamarack = weight_df_tamarack.style.apply(
-                lambda x: ['background-color: #ffcccc' if float(x['Weight (lb)'].replace(',', '')) > float(x['Max Weight (lb)'].replace(',', '')) else '' for i in x],
-                axis=1
-            )
+            def highlight_exceeded(row):
+                weight = float(row['Weight (lb)'].replace(',', ''))
+                max_weight = row['Max Weight (lb)']
+                if max_weight and max_weight.strip():  # Only compare if max_weight is not empty
+                    try:
+                        max_weight_val = float(max_weight.replace(',', ''))
+                        if weight > max_weight_val:
+                            return ['background-color: #ffcccc'] * len(row)
+                    except (ValueError, AttributeError):
+                        pass
+                return [''] * len(row)
+
+            styled_df_tamarack = weight_df_tamarack.style.apply(highlight_exceeded, axis=1)
             st.table(styled_df_tamarack)
             
             # Check for any exceeded weight limits
-            weight_exceeded_t = weight_df_tamarack.apply(
-                lambda row: float(row['Weight (lb)'].replace(',', '')) > float(row['Max Weight (lb)'].replace(',', '')),
-                axis=1
-            ).any()
+            def is_weight_exceeded(row):
+                try:
+                    weight = float(row['Weight (lb)'].replace(',', ''))
+                    max_weight = row['Max Weight (lb)']
+                    if max_weight and max_weight.strip():
+                        max_weight_val = float(max_weight.replace(',', ''))
+                        return weight > max_weight_val
+                    return False
+                except (ValueError, AttributeError):
+                    return False
+            
+            weight_exceeded_t = weight_df_tamarack.apply(is_weight_exceeded, axis=1).any()
             
             if weight_exceeded_t:
                 st.error("Weight limits exceeded! Please adjust the following:")
@@ -572,32 +606,49 @@ if st.button("Run Simulation"):
                 f"{tow:,.0f}"
             ],
             'Max Weight (lb)': [
-                f"{bow:,.0f}",
-                f"{max_payload:,.0f}",
-                f"{max_fuel:,.0f}",
-                f"{reserve_fuel_default:,.0f}",
-                f"{taxi_fuel_default:,.0f}",
-                f"{mission_fuel:,.0f}",
-                f"{mzfw:,.0f}",
-                f"{mrw:,.0f}",
-                f"{mtow:,.0f}"
+                "",  # BOW - no max
+                f"{max_payload:,.0f}",  # Payload has max
+                f"{max_fuel:,.0f}",  # Initial Fuel has max
+                "",  # Reserve Fuel - no max
+                "",  # Taxi Fuel - no max
+                "",  # Mission Fuel - no max
+                f"{mzfw:,.0f}",  # ZFW has max
+                f"{mrw:,.0f}",  # Ramp Weight has max
+                f"{mtow:,.0f}"  # Takeoff Weight has max
             ]
         })
 
         # Display weight status table before simulation
         st.markdown("---")
         st.subheader('Weight Status')
-        styled_df = weight_df.style.apply(
-            lambda x: ['background-color: #ffcccc' if float(x['Weight (lb)'].replace(',', '')) > float(x['Max Weight (lb)'].replace(',', '')) else '' for i in x],
-            axis=1
-        )
+        def highlight_exceeded(row):
+            weight = float(row['Weight (lb)'].replace(',', ''))
+            max_weight = row['Max Weight (lb)']
+            if max_weight and max_weight.strip():  # Only compare if max_weight is not empty
+                try:
+                    max_weight_val = float(max_weight.replace(',', ''))
+                    if weight > max_weight_val:
+                        return ['background-color: #ffcccc'] * len(row)
+                except (ValueError, AttributeError):
+                    pass
+            return [''] * len(row)
+
+        styled_df = weight_df.style.apply(highlight_exceeded, axis=1)
         st.table(styled_df)
         
         # Check for any exceeded weight limits
-        weight_exceeded = weight_df.apply(
-            lambda row: float(row['Weight (lb)'].replace(',', '')) > float(row['Max Weight (lb)'].replace(',', '')),
-            axis=1
-        ).any()
+        def is_weight_exceeded(row):
+            try:
+                weight = float(row['Weight (lb)'].replace(',', ''))
+                max_weight = row['Max Weight (lb)']
+                if max_weight and max_weight.strip():
+                    max_weight_val = float(max_weight.replace(',', ''))
+                    return weight > max_weight_val
+                return False
+            except (ValueError, AttributeError):
+                return False
+        
+        weight_exceeded = weight_df.apply(is_weight_exceeded, axis=1).any()
         
         if weight_exceeded:
             st.error("Weight limits exceeded! Please adjust the following:")
