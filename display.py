@@ -81,7 +81,7 @@ def write_metrics_with_headings(results_dict, label):
             "fields": [
                 "Takeoff Roll Dist (ft)", "Dist to 35 ft (ft)",
                 "Segment 1 Gradient (%)", "Dist to 400 ft (ft)", "Segment 2 Gradient (%)", "Dist to 1500 ft (ft)", "Segment 3 Gradient (%)",
-                "Climb Fuel (lb)", "Fuel Remaining After Takeoff (lb)"
+                "Takeoff Fuel (lb)", "Fuel Remaining After Takeoff (lb)"
             ]
         },
         "Climb": {
@@ -139,6 +139,19 @@ def write_metrics_with_headings(results_dict, label):
                 st.warning(f"V-speeds data not found for {phase}")
 
         for field in config.get("fields", []):
+            # Special handling: show 'Takeoff Fuel (lb)' in Takeoff section
+            if section == "Takeoff" and field == "Takeoff Fuel (lb)":
+                val = None
+                try:
+                    sw = results_dict.get("Takeoff Start Weight (lb)")
+                    ew = results_dict.get("Takeoff End Weight (lb)")
+                    if sw is not None and ew is not None:
+                        val = int(sw) - int(ew)
+                except Exception:
+                    val = None
+                if val is not None and val >= 0:
+                    st.write(f"Takeoff Fuel (lb): {val}")
+                continue
             if field in results_dict:
                 st.write(f"{field}: {results_dict[field]}")
 
@@ -161,7 +174,7 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
                                      name=f"{y2_label} (Flatwing)", yaxis='y2', line=dict(color="red")))
 
         fig.update_layout(
-            xaxis=dict(title=x),
+            xaxis=dict(title=x, showgrid=True, gridcolor='LightGrey', gridwidth=1),
             yaxis=dict(title=y1_label),
             yaxis2=dict(title=y2_label, overlaying='y', side='right'),
             title=title,
@@ -184,7 +197,7 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
             return None
 
         fig.update_layout(
-            xaxis=dict(title=x),
+            xaxis=dict(title=x, showgrid=True, gridcolor='LightGrey', gridwidth=1),
             yaxis=dict(title=y_label),
             title=title,
             legend=dict(x=0.01, y=1.15, orientation="h")
@@ -314,13 +327,19 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
         )
         
         st.plotly_chart(fig, use_container_width=True)
+        figs["fuel_remaining"] = fig
         
     else:
         # Show single aircraft plot if only one aircraft is available
         if not tamarack_data.empty and "fuel_distance_plot" in tamarack_results:
             st.plotly_chart(tamarack_results["fuel_distance_plot"], use_container_width=True)
+            figs["fuel_remaining"] = tamarack_results["fuel_distance_plot"]
         elif not flatwing_data.empty and "fuel_distance_plot" in flatwing_results:
             st.plotly_chart(flatwing_results["fuel_distance_plot"], use_container_width=True)
+            figs["fuel_remaining"] = flatwing_results["fuel_distance_plot"]
+        return figs
+
+    # Always return figs if combined path was taken
     return figs
 
 def display_simulation_results(
@@ -579,6 +598,10 @@ def display_simulation_results(
             c.showPage(); y = height - 40
             # Second page: Fuel Remaining
             draw_fig("fuel_remaining", "Fuel Remaining vs. Distance")
+            # Additional pages: Performance charts
+            draw_fig("ROC (fpm)", "Rate of Climb vs. Distance")
+            draw_fig("Thrust (lb)", "Thrust vs. Distance")
+            draw_fig("Drag (lb)", "Drag vs. Distance")
 
             def write_metrics_block(title, results):
                 nonlocal y

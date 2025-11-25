@@ -384,7 +384,8 @@ if summary_df is not None and len(summary_df) > 0:
                     yaxis_title="Payload (lb)",
                     template="plotly_white",
                     width=1000,
-                    height=600
+                    height=600,
+                    xaxis=dict(showgrid=True, gridcolor="LightGrey", gridwidth=1)
                 )
                 st.plotly_chart(fig, use_container_width=False)
             else:
@@ -431,7 +432,7 @@ if summary_df is not None and len(summary_df) > 0:
                                 showlegend=first_legend
                             ))
                             first_legend = False
-                fig.update_layout(title=title_txt, xaxis_title=x_label, yaxis_title="Max Range (NM)", template="plotly_white", width=1000, height=600)
+                fig.update_layout(title=title_txt, xaxis_title=x_label, yaxis_title="Max Range (NM)", template="plotly_white", width=1000, height=600, xaxis=dict(showgrid=True, gridcolor="LightGrey", gridwidth=1))
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("No payload=0 data at selected altitude.")
@@ -475,7 +476,7 @@ if summary_df is not None and len(summary_df) > 0:
                                 showlegend=first_legend
                             ))
                             first_legend = False
-                fig.update_layout(title=title_txt, xaxis_title=x_label, yaxis_title="Max Endurance (min)", template="plotly_white")
+                fig.update_layout(title=title_txt, xaxis_title=x_label, yaxis_title="Max Endurance (min)", template="plotly_white", xaxis=dict(showgrid=True, gridcolor="LightGrey", gridwidth=1))
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("No payload=0 data at selected altitude.")
@@ -528,7 +529,7 @@ if summary_df is not None and len(summary_df) > 0:
                                 showlegend=first_legend
                             ))
                             first_legend = False
-                fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title="Max Range (NM)", template="plotly_white")
+                fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title="Max Range (NM)", template="plotly_white", xaxis=dict(showgrid=True, gridcolor="LightGrey", gridwidth=1))
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("No payload=0 data at selected Mach.")
