@@ -1,5 +1,17 @@
 import streamlit as st
 import plotly.graph_objects as go
+import plotly.io as pio
+from io import BytesIO
+import datetime
+import os
+from simulation import get_global_timestamp
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
+    REPORTLAB_AVAILABLE = True
+except Exception:
+    REPORTLAB_AVAILABLE = False
 
 def display_vspeeds(label: str, vspeeds_data: dict, phase: str = "Takeoff"):
     """Display V-speeds for a given flight phase.
@@ -131,7 +143,9 @@ def write_metrics_with_headings(results_dict, label):
 def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results):
     st.subheader("Flight Profile Charts")
 
-    def plot_dual_y(title, x, y1_label, y1_tam, y1_flat, y2_label, y2_tam, y2_flat):
+    figs = {}
+
+    def plot_dual_y(title, key_name, x, y1_label, y1_tam, y1_flat, y2_label, y2_tam, y2_flat):
         fig = go.Figure()
         if not tamarack_data.empty:
             fig.add_trace(go.Scatter(x=tamarack_data[x], y=tamarack_data[y1_tam],
@@ -152,8 +166,9 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
             legend=dict(x=0.01, y=1.15, orientation="h")
         )
         st.plotly_chart(fig, use_container_width=True)
+        figs[key_name] = fig
 
-    def plot_single_y(title, x, y_label, y_tam, y_flat):
+    def plot_single_y(title, key_name, x, y_label, y_tam, y_flat):
         fig = go.Figure()
         if not tamarack_data.empty and y_tam in tamarack_data.columns:
             fig.add_trace(go.Scatter(x=tamarack_data[x], y=tamarack_data[y_tam],
@@ -164,7 +179,7 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
 
         if not fig.data:
             st.warning(f"Skipping '{title}' – column missing in both datasets.")
-            return
+            return None
 
         fig.update_layout(
             xaxis=dict(title=x),
@@ -173,17 +188,19 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
             legend=dict(x=0.01, y=1.15, orientation="h")
         )
         st.plotly_chart(fig, use_container_width=True)
+        figs[key_name] = fig
+        return fig
 
-    plot_dual_y("Altitude and Mach vs. Distance", "Distance (NM)",
+    plot_dual_y("Altitude and Mach vs. Distance", "alt_mach", "Distance (NM)",
                 "Altitude (ft)", "Altitude (ft)", "Altitude (ft)",
                 "Mach", "Mach", "Mach")
 
-    for title in [
+    for title, col in [
         ("Rate of Climb vs. Distance", "ROC (fpm)"),
         ("Thrust vs. Distance", "Thrust (lb)"),
         ("Drag vs. Distance", "Drag (lb)")
     ]:
-        plot_single_y(title[0], "Distance (NM)", title[1], title[1], title[1])
+        plot_single_y(title, col, "Distance (NM)", col, col, col)
 
     st.subheader("Fuel Remaining vs Distance")
     
@@ -302,11 +319,13 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
             st.plotly_chart(tamarack_results["fuel_distance_plot"], use_container_width=True)
         elif not flatwing_data.empty and "fuel_distance_plot" in flatwing_results:
             st.plotly_chart(flatwing_results["fuel_distance_plot"], use_container_width=True)
+    return figs
 
 def display_simulation_results(
     tamarack_data, tamarack_results, flatwing_data, flatwing_results, v1_cut_enabled,
     dep_latitude, dep_longitude, arr_latitude, arr_longitude, distance_nm, bearing_deg,
-    winds_temps_source, cruise_alt, departure_airport, arrival_airport, initial_fuel
+    winds_temps_source, cruise_alt, departure_airport, arrival_airport, initial_fuel,
+    report_output_dir=None
 ):
     st.subheader("Flight Route Map")
     fig = go.Figure()
@@ -453,4 +472,97 @@ def display_simulation_results(
         elif results.get("error"):
             st.error(results["error"])
 
-    plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results)
+    figs = plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results)
+
+    # PDF export section
+    st.subheader("Report Export")
+    if not REPORTLAB_AVAILABLE:
+        st.info("To enable PDF export with charts, install dependencies: pip install -U reportlab kaleido")
+    else:
+        # Build PDF into memory and offer for download
+        def build_pdf_bytes():
+            buf = BytesIO()
+            c = canvas.Canvas(buf, pagesize=letter)
+            width, height = letter
+
+            y = height - 40
+            c.setFont("Helvetica-Bold", 16)
+            c.drawString(40, y, "Recover Mission Simulation Report")
+            y -= 18
+            c.setFont("Helvetica", 10)
+            c.drawString(40, y, f"Route: {departure_airport}  {arrival_airport} | Distance: {distance_nm:.1f} NM | Bearing: {bearing_deg:.1f} ")
+            y -= 14
+            c.drawString(40, y, f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            y -= 16
+
+            # Try to embed key charts
+            def draw_fig(key, label):
+                nonlocal y
+                if key in figs and figs[key] is not None:
+                    try:
+                        img_bytes = figs[key].to_image(format="png", scale=2)
+                        img = ImageReader(BytesIO(img_bytes))
+                        img_w = width - 80
+                        img_h = img_w * 0.6
+                        if y - img_h < 40:
+                            c.showPage(); y = height - 40
+                        c.setFont("Helvetica-Bold", 12)
+                        c.drawString(40, y, label)
+                        y -= 12
+                        c.drawImage(img, 40, y - img_h, width=img_w, height=img_h)
+                        y -= img_h + 12
+                    except Exception as e:
+                        c.setFont("Helvetica-Oblique", 10)
+                        c.drawString(40, y, f"(Could not embed chart '{label}': {str(e)})")
+                        y -= 12
+
+            # First page: Altitude/Mach
+            draw_fig("alt_mach", "Altitude and Mach vs. Distance")
+            c.showPage(); y = height - 40
+            # Second page: Fuel Remaining
+            draw_fig("fuel_remaining", "Fuel Remaining vs. Distance")
+
+            def write_metrics_block(title, results):
+                nonlocal y
+                if y < 120:
+                    c.showPage(); y = height - 40
+                c.setFont("Helvetica-Bold", 12)
+                c.drawString(40, y, title)
+                y -= 14
+                c.setFont("Helvetica", 10)
+                for k in [
+                    "Total Time (min)", "Total Dist (NM)", "Total Fuel Burned (lb)",
+                    "Cruise VKTAS (knots)", "Cruise Max Mach"
+                ]:
+                    if k in results:
+                        c.drawString(50, y, f"{k}: {results[k]}")
+                        y -= 12
+
+            write_metrics_block("Tamarack Summary", tamarack_results)
+            write_metrics_block("Flatwing Summary", flatwing_results)
+
+            c.save()
+            buf.seek(0)
+            return buf.getvalue()
+
+        try:
+            pdf_bytes = build_pdf_bytes()
+            st.download_button(
+                label="Download PDF Report",
+                data=pdf_bytes,
+                file_name="mission_report.pdf",
+                mime="application/pdf"
+            )
+            # Also save to output folder with timestamped name
+            try:
+                if report_output_dir:
+                    os.makedirs(report_output_dir, exist_ok=True)
+                    pdf_name = f"Report_{departure_airport}_{arrival_airport}_{get_global_timestamp()}.pdf"
+                    save_path = os.path.join(report_output_dir, pdf_name)
+                    with open(save_path, "wb") as f:
+                        f.write(pdf_bytes)
+                    st.success(f"Saved PDF to: {save_path}")
+            except Exception as e:
+                st.warning(f"Could not save PDF to output folder: {e}")
+        except Exception as e:
+            st.warning(f"PDF export unavailable: {e}")

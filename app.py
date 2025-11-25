@@ -863,14 +863,17 @@ if st.button("Run Simulation"):
     if v1_cut_enabled:
         if not tamarack_data.empty:
             end_idx = tamarack_data[tamarack_data['Segment'] == 3].index[-1] if not tamarack_data[tamarack_data['Segment'] == 3].empty else 0
-            tamarack_data = tamarack_data.iloc[:end_idx + 1]
-        if not flatwing_data.empty:
-            end_idx = flatwing_data[flatwing_data['Segment'] == 3].index[-1] if not flatwing_data[flatwing_data['Segment'] == 3].empty else 0
-            flatwing_data = flatwing_data.iloc[:end_idx + 1]
 
-    # Display simulation results
+    # Display simulation results (for all wing types)
     st.markdown("---")
     st.header('Simulation Results')
+    # Determine output folder for report (same as CSV)
+    report_output_dir = None
+    if 'tamarack_output_file' in locals():
+        report_output_dir = os.path.dirname(tamarack_output_file)
+    elif 'flatwing_output_file' in locals():
+        report_output_dir = os.path.dirname(flatwing_output_file)
+
     display_simulation_results(
         tamarack_data, tamarack_results,
         flatwing_data, flatwing_results,
@@ -881,10 +884,11 @@ if st.button("Run Simulation"):
         cruise_altitude_f if wing_type == "Flatwing" else cruise_altitude_t,
         dep_airport_code,
         arr_airport_code,
-        fuel_f if wing_type == "Flatwing" else fuel_t
+        fuel_f if wing_type == "Flatwing" else fuel_t,
+        report_output_dir=report_output_dir
     )
     
-    # Display output file information
+    # Display output file information (for all wing types)
     st.markdown("---")
     st.subheader('Output Files')
     

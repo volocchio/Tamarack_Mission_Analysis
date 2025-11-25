@@ -1,1 +1,0 @@
-{"aircraft_models":["CJ1"],"mods":["Flatwing","Tamarack"],"payload_steps":8,"taxi_fuel_lb":100,"isa_devs":[-10,0,10,20],"flap_settings":[0],"save_plots":false,"save_summary_plots":true,"save_timeseries":false,"parallel_workers":6,"output_dir":"batch_outputs\\20251105_144149\\CJ1","run_type":"individual_aircraft"}

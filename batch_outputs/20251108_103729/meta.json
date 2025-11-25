@@ -1,1 +1,0 @@
-{"aircraft_models":["C208B"],"mods":["Flatwing"],"payload_steps":8,"taxi_fuel_lb":100,"isa_devs":[-10],"flap_settings":[0],"save_plots":false,"save_summary_plots":true,"save_timeseries":false,"parallel_workers":6,"output_dir":"batch_outputs\\20251108_103729","run_type":"combined_multi_aircraft"}
