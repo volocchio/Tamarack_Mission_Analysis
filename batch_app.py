@@ -12,6 +12,13 @@ except ImportError:
     TURBOPROP_PARAMS = {}
 from batch.payload_range import run_payload_range_batch
 
+# Detect Kaleido for static image export
+try:
+    import kaleido  # type: ignore
+    _kaleido_available = True
+except Exception:
+    _kaleido_available = False
+
 st.set_page_config(page_title="Payload–Range Sweeps", layout="wide")
 st.title("Batch Payload–Range Sweeps")
 
@@ -105,9 +112,12 @@ with st.sidebar:
         default=["Payload-Range Curves", "Max Range vs Mach", "Max Range vs Altitude"],
     )
     save_summary_plots_ui = st.checkbox(
-        "Save summary plots (PNG)", value=True,
+        "Save summary plots (PNG)", value=_kaleido_available,
         help="Writes static images to each aircraft's summary_plots folder"
     )
+    if save_summary_plots_ui and not _kaleido_available:
+        st.info("Kaleido not installed; disabling summary plot export.")
+        save_summary_plots_ui = False
 
     # Rough ETA estimate based on current inputs (ignores per-aircraft ceiling/MMO filtering)
     def _count_range_float(start: float, end: float, step: float) -> int:

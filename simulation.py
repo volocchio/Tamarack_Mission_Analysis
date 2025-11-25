@@ -310,6 +310,10 @@ def run_simulation(
     winds_temps_source: str,
     v1_cut_enabled: bool,
     write_output_file: bool = True,
+    cruise_mach: float | None = None,
+    cruise_kias: float | None = None,
+    isa_dev_c: float | None = None,
+    range_mode: bool = False,
 ):
     """Simulate a flight between two airports.
     
@@ -327,6 +331,10 @@ def run_simulation(
         winds_temps_source: Source for winds and temperatures.
         v1_cut_enabled: Whether V1 cut is enabled.
         write_output_file: Whether to write the output file.
+        cruise_mach: Optional cruise Mach number override.
+        cruise_kias: Optional cruise KIAS override (not used).
+        isa_dev_c: Optional ISA temperature deviation in Celsius.
+        range_mode: Optional range mode (not used).
 
     Returns:
         tuple: (flight_data, results, dep_lat, dep_lon, arr_lat, arr_lon, output_file_path)
@@ -403,6 +411,20 @@ def run_simulation(
     engines = engines_orig  # Store original engines value, may be modified by V1 cut
     reserve_fuel = reserve_fuel
     m_cruise = 0.7
+    # Optional overrides from batch interface
+    try:
+        if cruise_mach is not None:
+            m_cruise = float(cruise_mach)
+    except Exception:
+        pass
+    # Accept cruise_kias for compatibility; not used in current physics goals above 10k
+    _cruise_kias = None
+    try:
+        if cruise_kias is not None:
+            _cruise_kias = float(cruise_kias)
+    except Exception:
+        _cruise_kias = None
+
     alt_goal = cruise_alt
     rod = -2000
     rod_u_10k = -1500
@@ -466,6 +488,13 @@ def run_simulation(
         }
     }
     selected_winds_temps = winds_temps_data[winds_temps_source]
+    # ISA deviation override (applied as an additive temperature delta each step)
+    isa_dev_c_opt = 0.0
+    try:
+        if isa_dev_c is not None:
+            isa_dev_c_opt = float(isa_dev_c)
+    except Exception:
+        isa_dev_c_opt = 0.0
 
     v_u_10k = 200
     a = b ** 2 / s * (1 + 1.9 * h / b)
@@ -799,6 +828,8 @@ def run_simulation(
 
         # Interpolate winds and temperatures at the current altitude
         wind_dir, wind_speed, temp = interpolate_winds_temps(alt, selected_winds_temps)
+        if isa_dev_c_opt:
+            temp = temp + isa_dev_c_opt
 
         # Compute ISA temperature at current altitude for density altitude adjustment
         isa_temp = 15 - 0.0019812 * alt  # ISA temperature lapse rate (approx)

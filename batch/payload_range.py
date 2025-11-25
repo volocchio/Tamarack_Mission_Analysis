@@ -409,13 +409,16 @@ def run_payload_range_batch(
             aircraft_sorted = aircraft_df.sort_values(["mod","cruise_alt","isa_dev","mach","payload"], ascending=[True,False,True,False,True])
             aircraft_dir = aircraft_dirs[aircraft]["base"]
             
-            # Round selected columns to 0 decimals for summary CSV
+            # Round selected columns to 0 decimals for summary CSV (skip NA/inf)
             cols0 = ["total_dist_nm", "cruise_vkias_kts"]
             display_df = aircraft_sorted.copy()
             for _c in cols0:
                 if _c in display_df.columns:
                     _num = pd.to_numeric(display_df[_c], errors="coerce")
-                    display_df.loc[_num.notna(), _c] = _num.round(0).astype(int)
+                    rounded = _num.round(0)
+                    finite_mask = pd.Series(np.isfinite(rounded.values), index=rounded.index)
+                    mask = rounded.notna() & finite_mask
+                    display_df.loc[mask, _c] = rounded[mask].astype(int)
             
             # Save CSV and parquet
             display_df.to_csv(aircraft_dir / "summary.csv", index=False)
@@ -429,13 +432,16 @@ def run_payload_range_batch(
     mod_order = pd.CategoricalDtype(["Flatwing", "Tamarack"], ordered=True)
     df_sorted.loc[:, "mod"] = df_sorted["mod"].astype(mod_order)
     df_sorted = df_sorted.sort_values(["aircraft","mod","cruise_alt","isa_dev","mach","payload"], ascending=[True,True,False,True,False,True])
-    # Round selected columns to 0 decimals for combined summary CSV
+    # Round selected columns to 0 decimals for combined summary CSV (skip NA/inf)
     cols0 = ["total_dist_nm", "cruise_vkias_kts"]
     display_df2 = df_sorted.copy()
     for _c in cols0:
         if _c in display_df2.columns:
             _num = pd.to_numeric(display_df2[_c], errors="coerce")
-            display_df2.loc[_num.notna(), _c] = _num.round(0).astype(int)
+            rounded = _num.round(0)
+            finite_mask = pd.Series(np.isfinite(rounded.values), index=rounded.index)
+            mask = rounded.notna() & finite_mask
+            display_df2.loc[mask, _c] = rounded[mask].astype(int)
     display_df2.to_csv(base_ts_dir / "combined_summary.csv", index=False)
     try:
         df_sorted.to_parquet(base_ts_dir / "combined_summary.parquet", index=False)
