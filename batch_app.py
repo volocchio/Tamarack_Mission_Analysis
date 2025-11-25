@@ -340,12 +340,17 @@ if summary_df is not None and len(summary_df) > 0:
                 for mod in mods:
                     for a in aircrafts:
                         for dev in sorted(df_pr["isa_dev"].dropna().unique()):
-                            dfg = df_pr[(df_pr["mod"] == mod) & (df_pr["aircraft"] == a) & (df_pr["isa_dev"] == dev)].copy()
-                            if dfg.empty:
+                            dfg0 = df_pr[(df_pr["mod"] == mod) & (df_pr["aircraft"] == a) & (df_pr["isa_dev"] == dev)].copy()
+                            if dfg0.empty:
                                 continue
-                            # Convert to numeric and clean
-                            dfg.loc[:, "total_dist_nm_num"] = pd.to_numeric(dfg["total_dist_nm"], errors="coerce")
-                            dfg = dfg.dropna(subset=["total_dist_nm_num", "payload"]).copy()
+                            # Compute attained metrics for legend before aggregation
+                            att_m_vals = pd.to_numeric(dfg0.get("achieved_mach"), errors="coerce").dropna()
+                            att_m_txt = f"M {att_m_vals.max():.2f}" if len(att_m_vals) > 0 else "M —"
+                            att_alt_vals = pd.to_numeric(dfg0.get("first_level_off_ft"), errors="coerce").dropna()
+                            att_fl_txt = f"FL{int(att_alt_vals.max()/100)}" if len(att_alt_vals) > 0 else "FL—"
+                            # Convert to numeric and clean for plotting
+                            dfg0.loc[:, "total_dist_nm_num"] = pd.to_numeric(dfg0["total_dist_nm"], errors="coerce")
+                            dfg = dfg0.dropna(subset=["total_dist_nm_num", "payload"]).copy()
                             if dfg.empty:
                                 continue
                             # Deduplicate payloads: keep max range per payload
@@ -365,15 +370,16 @@ if summary_df is not None and len(summary_df) > 0:
                                 keep = np.concatenate(([True], x_plot[1:] > x_plot[:-1] + 1e-9))
                                 x_plot = x_plot[keep]
                                 y_vals = y_vals[keep]
+                            label_mod = ("BL" if mod == "Flatwing" else "Mod")
                             fig.add_trace(go.Scatter(
                                 x=x_plot,
                                 y=y_vals,
                                 mode="lines",
-                                name=f"{mod} - {a} - ISA {dev:+d}°C",
+                                name=f"{label_mod} Max Achieved {att_m_txt}, Attained {att_fl_txt} - {a} - ISA {int(dev):+d}°C",
                                 line=dict(color=color_map.get(mod, None), dash=("dash" if dev == -10 else "solid" if dev == 0 else "dot" if dev == 10 else "dashdot"))
                             ))
                 fig.update_layout(
-                    title=(f"Payload-Range at FL{int(sel_alt/100):.0f}, M {float(sel_speed):.2f}" if speed_col == "mach" else f"Payload-Range at FL{int(sel_alt/100):.0f}, IAS {int(sel_speed)} kt"),
+                    title=(f"Payload-Range at FL{int(sel_alt/100):.0f}, M {float(sel_speed):.2f} Goal" if speed_col == "mach" else f"Payload-Range at FL{int(sel_alt/100):.0f}, IAS {int(sel_speed)} kt"),
                     xaxis_title="Range (NM)",
                     yaxis_title="Payload (lb)",
                     template="plotly_white",
@@ -398,22 +404,34 @@ if summary_df is not None and len(summary_df) > 0:
                 df_mach.loc[:, "isa_label"] = df_mach["isa_dev"].apply(lambda x: f"ISA {x:+d}°C")
                 has_kias = ("kias" in df_mach.columns) and pd.to_numeric(df_mach.get("kias"), errors="coerce").notna().any()
                 speed_col = "kias" if has_kias else "mach"
-                x_label = "IAS (kts)" if speed_col == "kias" else "Mach"
-                title_txt = f"Max Range vs {'IAS' if speed_col=='kias' else 'Mach'} at FL{int(sel_alt/100):.0f}"
-                fig = px.line(
-                    df_mach,
-                    x=speed_col,
-                    y="total_dist_nm",
-                    color="mod",
-                    line_dash="isa_label",
-                    line_group="aircraft",
-                    labels={speed_col: x_label, "total_dist_nm": "Max Range (NM)", "isa_label": "Temperature"},
-                    title=title_txt,
-                    color_discrete_map={"Flatwing": "red", "Tamarack": "green"},
-                )
-                fig.update_traces(mode="lines")
-                fig.update_layout(width=1000, height=600)
-                fig.update_layout(height=600)
+                x_label = "IAS (kts)" if speed_col == "kias" else "Target Mach"
+                title_txt = f"Max Range vs {'IAS' if speed_col=='kias' else 'Mach'} at FL{int(sel_alt/100):.0f} Goal"
+                # Build custom legend: show attained first level-off altitude
+                fig = go.Figure()
+                color_map = {"Flatwing": "red", "Tamarack": "green"}
+                dash_for = { -20: "longdashdot", -10: "dash", 0: "solid", 10: "dot", 20: "dashdot", 30: "longdash" }
+                for mod in sorted(df_mach["mod"].dropna().unique().tolist()):
+                    d_mod = df_mach[df_mach["mod"] == mod]
+                    for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
+                        d_dev = d_mod[pd.to_numeric(d_mod["isa_dev"], errors="coerce") == dev]
+                        # Compute attained first level-off altitude (max across points)
+                        att_alt = pd.to_numeric(d_dev.get("first_level_off_ft"), errors="coerce").dropna()
+                        att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                        # Plot one trace per aircraft to preserve shapes; only first shows legend
+                        first_legend = True
+                        for ac in sorted(d_dev["aircraft"].dropna().unique().tolist()):
+                            d_line = d_dev[d_dev["aircraft"] == ac]
+                            label_mod = ("BL" if mod == "Flatwing" else "Mod")
+                            fig.add_trace(go.Scatter(
+                                x=d_line[speed_col],
+                                y=d_line["total_dist_nm"],
+                                mode="lines",
+                                name=(f"{label_mod} Attained {att_fl_txt} - ISA {int(dev):+d}°C" if first_legend else None),
+                                line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid")),
+                                showlegend=first_legend
+                            ))
+                            first_legend = False
+                fig.update_layout(title=title_txt, xaxis_title=x_label, yaxis_title="Max Range (NM)", template="plotly_white", width=1000, height=600)
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("No payload=0 data at selected altitude.")
@@ -431,20 +449,33 @@ if summary_df is not None and len(summary_df) > 0:
                 df_end.loc[:, "isa_label"] = df_end["isa_dev"].apply(lambda x: f"ISA {x:+d}°C")
                 has_kias = ("kias" in df_end.columns) and pd.to_numeric(df_end.get("kias"), errors="coerce").notna().any()
                 speed_col = "kias" if has_kias else "mach"
-                x_label = "IAS (kts)" if speed_col == "kias" else "Mach"
-                title_txt = f"Max Endurance vs {'IAS' if speed_col=='kias' else 'Mach'} at FL{int(sel_alt/100):.0f}"
-                fig = px.line(
-                    df_end,
-                    x=speed_col,
-                    y="total_time_min",
-                    color="mod",
-                    line_dash="isa_label",
-                    line_group="aircraft",
-                    labels={speed_col: x_label, "total_time_min": "Max Endurance (min)", "isa_label": "Temperature"},
-                    title=title_txt,
-                    color_discrete_map={"Flatwing": "red", "Tamarack": "green"},
-                )
-                fig.update_traces(mode="lines")
+                x_label = "IAS (kts)" if speed_col == "kias" else "Target Mach"
+                title_txt = f"Max Endurance vs {'IAS' if speed_col=='kias' else 'Mach'} at FL{int(sel_alt/100):.0f} Goal"
+                # Build custom legend: show attained first level-off altitude
+                fig = go.Figure()
+                color_map = {"Flatwing": "red", "Tamarack": "green"}
+                dash_for = { -20: "longdashdot", -10: "dash", 0: "solid", 10: "dot", 20: "dashdot", 30: "longdash" }
+                for mod in sorted(df_end["mod"].dropna().unique().tolist()):
+                    d_mod = df_end[df_end["mod"] == mod]
+                    for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
+                        d_dev = d_mod[pd.to_numeric(d_mod["isa_dev"], errors="coerce") == dev]
+                        # Attained first level-off altitude
+                        att_alt = pd.to_numeric(d_dev.get("first_level_off_ft"), errors="coerce").dropna()
+                        att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                        first_legend = True
+                        for ac in sorted(d_dev["aircraft"].dropna().unique().tolist()):
+                            d_line = d_dev[d_dev["aircraft"] == ac]
+                            label_mod = ("BL" if mod == "Flatwing" else "Mod")
+                            fig.add_trace(go.Scatter(
+                                x=d_line[speed_col],
+                                y=d_line["total_time_min"],
+                                mode="lines",
+                                name=(f"{label_mod} Attained {att_fl_txt} - ISA {int(dev):+d}°C" if first_legend else None),
+                                line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid")),
+                                showlegend=first_legend
+                            ))
+                            first_legend = False
+                fig.update_layout(title=title_txt, xaxis_title=x_label, yaxis_title="Max Endurance (min)", template="plotly_white")
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("No payload=0 data at selected altitude.")
@@ -470,19 +501,34 @@ if summary_df is not None and len(summary_df) > 0:
                 # Create ISA deviation labels for better legend
                 df_alt = df_alt.copy()
                 df_alt.loc[:, "isa_label"] = df_alt["isa_dev"].apply(lambda x: f"ISA {x:+d}°C")
-                title_txt = f"Max Range vs Altitude at M {float(sel_speed):.2f}" if speed_col == "mach" else f"Max Range vs Altitude at IAS {int(sel_speed)} kt"
-                fig = px.line(
-                    df_alt,
-                    x="cruise_alt",
-                    y="total_dist_nm",
-                    color="mod",
-                    line_dash="isa_label",
-                    line_group="aircraft",
-                    labels={"cruise_alt": "Cruise Altitude (ft)", "total_dist_nm": "Max Range (NM)", "isa_label": "Temperature"},
-                    title=title_txt,
-                    color_discrete_map={"Flatwing": "red", "Tamarack": "green"},
-                )
-                fig.update_traces(mode="lines")
+                title_txt = (f"Max Range vs Altitude at M {float(sel_speed):.2f} Goal" if speed_col == "mach" else f"Max Range vs Altitude at IAS {int(sel_speed)} kt")
+                # Build custom legend: show attained Mach and attained first level-off altitude
+                fig = go.Figure()
+                color_map = {"Flatwing": "red", "Tamarack": "green"}
+                dash_for = { -20: "longdashdot", -10: "dash", 0: "solid", 10: "dot", 20: "dashdot", 30: "longdash" }
+                for mod in sorted(df_alt["mod"].dropna().unique().tolist()):
+                    d_mod = df_alt[df_alt["mod"] == mod]
+                    for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
+                        d_dev = d_mod[pd.to_numeric(d_mod["isa_dev"], errors="coerce") == dev]
+                        # Compute attained metrics
+                        att_m = pd.to_numeric(d_dev.get("achieved_mach"), errors="coerce").dropna()
+                        att_m_txt = f"M {att_m.max():.2f}" if len(att_m) > 0 else "M —"
+                        att_alt = pd.to_numeric(d_dev.get("first_level_off_ft"), errors="coerce").dropna()
+                        att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                        first_legend = True
+                        for ac in sorted(d_dev["aircraft"].dropna().unique().tolist()):
+                            d_line = d_dev[d_dev["aircraft"] == ac]
+                            label_mod = ("BL" if mod == "Flatwing" else "Mod")
+                            fig.add_trace(go.Scatter(
+                                x=d_line["cruise_alt"],
+                                y=d_line["total_dist_nm"],
+                                mode="lines",
+                                name=(f"{label_mod} Max Achieved {att_m_txt}, Attained {att_fl_txt} - ISA {int(dev):+d}°C" if first_legend else None),
+                                line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid")),
+                                showlegend=first_legend
+                            ))
+                            first_legend = False
+                fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title="Max Range (NM)", template="plotly_white")
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("No payload=0 data at selected Mach.")

@@ -555,7 +555,7 @@ def run_payload_range_batch(
                                 continue
                             
                             color = "red" if mod == "Flatwing" else "green"
-                            mod_name = "Baseline (Flatwing)" if mod == "Flatwing" else "Modified (Tamarack)"
+                            label_mod = "BL" if mod == "Flatwing" else "Mod"
                             
                             for isa_dev in sorted(df_mod["isa_dev"].unique()):
                                 df_isa = df_mod[df_mod["isa_dev"] == isa_dev]
@@ -563,6 +563,17 @@ def run_payload_range_batch(
                                     continue
                                 df_plot = df_isa.sort_values("payload", ascending=False).copy()
                                 isa_label = f"ISA {isa_dev:+d}°C"
+                                # Compute attained metrics for legend
+                                try:
+                                    att_m = pd.to_numeric(df_isa.get("achieved_mach"), errors="coerce").dropna()
+                                    att_m_txt = f"M {att_m.max():.2f}" if len(att_m) > 0 else "M —"
+                                except Exception:
+                                    att_m_txt = "M —"
+                                try:
+                                    att_alt = pd.to_numeric(df_isa.get("first_level_off_ft"), errors="coerce").dropna()
+                                    att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                                except Exception:
+                                    att_fl_txt = "FL—"
 
                                 df_plot.loc[:, "total_dist_nm_num"] = pd.to_numeric(df_plot["total_dist_nm"], errors="coerce")
                                 df_plot = df_plot.dropna(subset=["total_dist_nm_num", "payload"])
@@ -590,11 +601,11 @@ def run_payload_range_batch(
                                     x=x_plot,
                                     y=y_vals,
                                     mode="lines",
-                                    name=f"{mod_name} - {isa_label}",
+                                    name=f"{label_mod} Max Achieved {att_m_txt}, Attained {att_fl_txt} - {isa_label}",
                                     line=dict(color=color, dash=("dash" if isa_dev == -10 else "solid" if isa_dev == 0 else "dot" if isa_dev == 10 else "dashdot"))
                                 ))
                         fig.update_layout(
-                            title=f"Payload-Range | {aircraft} | FL{int(alt/100)} | M {mach:.2f}",
+                            title=f"Payload-Range | {aircraft} | FL{int(alt/100)} Goal | M {mach:.2f} Goal",
                             xaxis_title="Range (NM)",
                             yaxis_title="Payload (lb)",
                             template="plotly_white"
@@ -622,7 +633,7 @@ def run_payload_range_batch(
                             continue
                         
                         color = "red" if mod == "Flatwing" else "green"
-                        mod_name = "Baseline" if mod == "Flatwing" else "Modified"
+                        label_mod = "BL" if mod == "Flatwing" else "Mod"
                         
                         for isa_dev in sorted(df_mod["isa_dev"].unique()):
                             df_isa = df_mod[df_mod["isa_dev"] == isa_dev]
@@ -632,21 +643,79 @@ def run_payload_range_batch(
                             df_plot = df_isa.sort_values("mach")
                             isa_label = f"ISA {isa_dev:+d}°C"
                             
+                            # Legend: show attained first level-off altitude instead of target altitude
+                            try:
+                                att_alt = pd.to_numeric(df_plot.get("first_level_off_ft"), errors="coerce").dropna()
+                                att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                            except Exception:
+                                att_fl_txt = "FL—"
                             fig.add_trace(go.Scatter(
                                 x=df_plot["mach"], 
                                 y=df_plot["total_dist_nm"], 
                                 mode="lines", 
-                                name=f"{mod_name} FL{int(alt/100)} - {isa_label}",
+                                name=f"{label_mod} Attained {att_fl_txt} - {isa_label}",
                                 line=dict(color=color, dash=("dash" if isa_dev == -10 else "solid" if isa_dev == 0 else "dot" if isa_dev == 10 else "dashdot"))
                             ))
                     
                     fig.update_layout(
-                        title=f"Range vs Mach (Payload=0) | {aircraft} | FL{int(alt/100)}",
-                        xaxis_title="Mach",
+                        title=f"Range vs Mach (Payload=0) | {aircraft} | FL{int(alt/100)} Goal",
+                        xaxis_title="Target Mach",
                         yaxis_title="Range (NM)",
                         template="plotly_white"
                     )
                     fig.write_image(str(aircraft_summary_dir / f"range_vs_mach_{aircraft}_FL{int(alt/100)}.png"), width=1600, height=900, scale=2)
+            # Family: Endurance vs Mach by Altitude (payload 0) with ISA temperature separation
+            for aircraft in sorted(df["aircraft"].dropna().unique()):
+                df_a0 = df[(df["aircraft"]==aircraft) & (df["payload"]==0)]
+                aircraft_summary_dir = aircraft_dirs[aircraft]["summary_plots"]
+                
+                for alt in sorted(df_a0["cruise_alt"].dropna().unique(), reverse=True):
+                    df_alt = df_a0[df_a0["cruise_alt"] == alt]
+                    if df_alt.empty:
+                        continue
+                    
+                    # Create ISA deviation labels for better legend
+                    df_alt = df_alt.copy()
+                    df_alt.loc[:, "isa_label"] = df_alt["isa_dev"].apply(lambda x: f"ISA {x:+d}°C")
+                    
+                    fig = go.Figure()
+                    for mod in sorted(df_alt["mod"].unique()):
+                        df_mod = df_alt[df_alt["mod"] == mod]
+                        if df_mod.empty:
+                            continue
+                        
+                        color = "red" if mod == "Flatwing" else "green"
+                        label_mod = "BL" if mod == "Flatwing" else "Mod"
+                        
+                        for isa_dev in sorted(df_mod["isa_dev"].unique()):
+                            df_isa = df_mod[df_mod["isa_dev"] == isa_dev]
+                            if df_isa.empty:
+                                continue
+                            
+                            df_plot = df_isa.sort_values("mach")
+                            isa_label = f"ISA {isa_dev:+d}°C"
+                            
+                            # Legend: show attained first level-off altitude instead of target altitude
+                            try:
+                                att_alt = pd.to_numeric(df_plot.get("first_level_off_ft"), errors="coerce").dropna()
+                                att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                            except Exception:
+                                att_fl_txt = "FL—"
+                            fig.add_trace(go.Scatter(
+                                x=df_plot["mach"], 
+                                y=df_plot["total_time_min"], 
+                                mode="lines", 
+                                name=f"{label_mod} Attained {att_fl_txt} - {isa_label}",
+                                line=dict(color=color, dash=("dash" if isa_dev == -10 else "solid" if isa_dev == 0 else "dot" if isa_dev == 10 else "dashdot"))
+                            ))
+                    
+                    fig.update_layout(
+                        title=f"Endurance vs Mach (Payload=0) | {aircraft} | FL{int(alt/100)} Goal",
+                        xaxis_title="Target Mach",
+                        yaxis_title="Endurance (min)",
+                        template="plotly_white"
+                    )
+                    fig.write_image(str(aircraft_summary_dir / f"endurance_vs_mach_{aircraft}_FL{int(alt/100)}.png"), width=1600, height=900, scale=2)
             # Family: Range vs Altitude by Mach (payload 0) with ISA temperature separation
             for aircraft in sorted(df["aircraft"].dropna().unique()):
                 df_a0 = df[(df["aircraft"]==aircraft) & (df["payload"]==0)]
@@ -678,17 +747,28 @@ def run_payload_range_batch(
                             df_plot = df_isa.sort_values("cruise_alt")
                             isa_label = f"ISA {isa_dev:+d}°C"
                             
+                            # Legend: show attained Mach and attained first level-off altitude
+                            try:
+                                att_m = pd.to_numeric(df_plot.get("achieved_mach"), errors="coerce").dropna()
+                                att_m_txt = f"M {att_m.max():.2f}" if len(att_m) > 0 else "M —"
+                            except Exception:
+                                att_m_txt = "M —"
+                            try:
+                                att_alt = pd.to_numeric(df_plot.get("first_level_off_ft"), errors="coerce").dropna()
+                                att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                            except Exception:
+                                att_fl_txt = "FL—"
                             fig.add_trace(go.Scatter(
                                 x=df_plot["cruise_alt"], 
                                 y=df_plot["total_dist_nm"], 
                                 mode="lines", 
-                                name=f"{mod_name} M {mach:.2f} - {isa_label}",
+                                name=f"{label_mod} Max Achieved {att_m_txt}, Attained {att_fl_txt} - {isa_label}",
                                 line=dict(color=color, dash=("dash" if isa_dev == -10 else "solid" if isa_dev == 0 else "dot" if isa_dev == 10 else "dashdot"))
                             ))
                     
                     fig.update_layout(
-                        title=f"Range vs Altitude (Payload=0) | {aircraft} | M {mach:.2f}",
-                        xaxis_title="Altitude (ft)",
+                        title=f"Range vs Altitude (Payload=0) | {aircraft} | M {mach:.2f} Goal",
+                        xaxis_title="Target Altitude (ft)",
                         yaxis_title="Range (NM)",
                         template="plotly_white"
                     )

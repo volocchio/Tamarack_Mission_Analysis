@@ -139,6 +139,37 @@ def create_output_file(results_df, aircraft_model, modification, dep_airport, ar
     # Gradient - 1 significant digit
     if 'Gradient (%)' in output_df.columns:
         formatted_df['Gradient (%)'] = output_df['Gradient (%)'].round(1)
+
+    # Segment number and title
+    if 'Segment' in output_df.columns:
+        try:
+            formatted_df['Segment'] = pd.to_numeric(output_df['Segment'], errors='coerce').round(0).astype('Int64')
+        except Exception:
+            formatted_df['Segment'] = pd.to_numeric(output_df['Segment'], errors='coerce')
+        # Map to titles
+        seg_map = {
+            0: 'Takeoff Roll',
+            1: 'VR to 35 ft',
+            2: '35 ft to 400 ft',
+            3: '400 ft to 1500 ft',
+            4: 'Climb (IAS)',
+            5: 'Climb (Mach)',
+            6: 'Cruise Accel/Leveloff',
+            7: 'Cruise',
+            8: 'Descent (Mach/High Alt)',
+            9: 'Descent (Mach Hold)',
+            10: 'Descent (IAS/Below 10k)',
+            11: 'Approach',
+            12: 'Final/Landing',
+            13: 'Rollout/Stop',
+            14: 'End'
+        }
+        try:
+            # Use integers for mapping when available
+            seg_int = pd.to_numeric(output_df['Segment'], errors='coerce').astype('Int64')
+            formatted_df['Segment Title'] = seg_int.map(seg_map)
+        except Exception:
+            formatted_df['Segment Title'] = pd.Series([None] * len(formatted_df))
     
     # Create filename
     filename = f"{aircraft_model}_{modification}_{dep_airport}_to_{arr_airport}_{timestamp}.csv"
@@ -690,9 +721,16 @@ def run_simulation(
     fuel_flow_data = []  # Fuel flow in lbs per hour
 
     while segment != 14:
-        if mission_fuel_remain < 0 and alt > alt_land:
-            final_results = {"error": f"Not Enough Fuel for {mod}."}
-            return pd.DataFrame(), final_results, dep_latitude, dep_longitude, arr_latitude, arr_longitude, ""
+        # Termination/guard conditions
+        if range_mode:
+            # In range mode, end the mission when mission fuel (initial - taxi - reserve) is exhausted
+            if mission_fuel_remain <= 0:
+                segment = 14
+                break
+        else:
+            if mission_fuel_remain < 0 and alt > alt_land:
+                final_results = {"error": f"Not Enough Fuel for {mod}."}
+                return pd.DataFrame(), final_results, dep_latitude, dep_longitude, arr_latitude, arr_longitude, ""
 
         # Reset vspeed_flag when entering segment 0, 12, or 13
         if segment in (0, 12, 13) and vspeed_flag != 0:
@@ -1141,7 +1179,7 @@ def run_simulation(
             segment = 5
         if (abs(round(thrust - drag)) < 1 or m >= m_cruise or m >= mmo) and segment == 6:
             segment = 7
-        if segment in (6, 7) and remaining_dist <= descent_threshold and alt > 10000:
+        if (not range_mode) and segment in (6, 7) and remaining_dist <= descent_threshold and alt > 10000:
             segment = 8
             gamma = -0.01
             fuel_start_descent = fob

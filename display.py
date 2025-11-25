@@ -4,6 +4,8 @@ import plotly.io as pio
 from io import BytesIO
 import datetime
 import os
+import numpy as np
+import pandas as pd
 from simulation import get_global_timestamp
 try:
     from reportlab.lib.pagesizes import letter
@@ -472,6 +474,62 @@ def display_simulation_results(
         elif results.get("error"):
             st.error(results["error"])
 
+    # Hourly Fuel Burn Summary (moved before Flight Profile Charts)
+    st.subheader("Hourly Fuel Burn Summary")
+    def _hourly_burns(df: pd.DataFrame) -> list[int]:
+        try:
+            if df is None or df.empty:
+                return []
+            if 'Time (hr)' not in df.columns or 'Fuel Remaining (lb)' not in df.columns:
+                return []
+            t = pd.to_numeric(df['Time (hr)'], errors='coerce')
+            f = pd.to_numeric(df['Fuel Remaining (lb)'], errors='coerce')
+            mask = t.notna() & f.notna()
+            t = t[mask].to_numpy()
+            f = f[mask].to_numpy()
+            if t.size == 0:
+                return []
+            t_max = float(np.nanmax(t))
+            if t_max <= 0:
+                return []
+            hours = int(np.ceil(t_max))
+            order = np.argsort(t)
+            t = t[order]
+            f = f[order]
+            burns = []
+            for h in range(hours):
+                start_t = float(h)
+                end_t = float(min(h + 1, t_max))
+                if end_t <= start_t:
+                    continue
+                start_f = float(np.interp(start_t, t, f))
+                end_f = float(np.interp(end_t, t, f))
+                burns.append(int(max(0.0, start_f - end_f)))
+            return burns
+        except Exception:
+            return []
+    burns_t = _hourly_burns(tamarack_data)
+    burns_f = _hourly_burns(flatwing_data)
+    if not burns_t and not burns_f:
+        st.info("No time history available to compute hourly burn.")
+    else:
+        if burns_t and burns_f:
+            n = max(len(burns_t), len(burns_f))
+            rows = []
+            for i in range(n):
+                rows.append({
+                    'Hour': i + 1,
+                    'Tamarack (lb)': (burns_t[i] if i < len(burns_t) else None),
+                    'Flatwing (lb)': (burns_f[i] if i < len(burns_f) else None)
+                })
+            st.table(pd.DataFrame(rows))
+        elif burns_t:
+            rows = [{'Hour': i + 1, 'Tamarack (lb)': v} for i, v in enumerate(burns_t)]
+            st.table(pd.DataFrame(rows))
+        else:
+            rows = [{'Hour': i + 1, 'Flatwing (lb)': v} for i, v in enumerate(burns_f)]
+            st.table(pd.DataFrame(rows))
+
     figs = plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results)
 
     # PDF export section
@@ -566,3 +624,5 @@ def display_simulation_results(
                 st.warning(f"Could not save PDF to output folder: {e}")
         except Exception as e:
             st.warning(f"PDF export unavailable: {e}")
+
+    
