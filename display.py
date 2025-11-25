@@ -9,12 +9,9 @@ def display_vspeeds(label: str, vspeeds_data: dict, phase: str = "Takeoff"):
         vspeeds_data: Dictionary containing V-speeds data
         phase: Flight phase (default: "Takeoff")
     """
-    print(f"\n=== DEBUG: display_vspeeds called for {phase} ===")
-    print(f"V-speeds data received: {vspeeds_data}")
     
     # Handle case where vspeeds_data is None or not a dictionary
     if not vspeeds_data or not isinstance(vspeeds_data, dict):
-        print(f"Error: Invalid V-speeds data for {phase}: {vspeeds_data}")
         st.warning(f"No valid V-speeds data available for {phase}")
         return
     
@@ -54,20 +51,12 @@ def display_vspeeds(label: str, vspeeds_data: dict, phase: str = "Takeoff"):
     
     # If no V-speeds were displayed, show a warning with available keys
     if not any_displayed:
-        error_msg = f"No valid V-speeds found for {phase}. "
-        error_msg += f"Available keys: {list(vspeeds_data.keys())}"
-        print(error_msg)
         st.warning(f"No valid V-speeds found for {phase}")
     else:
-        print(f"Successfully displayed V-speeds for {phase}")
+        pass
 
 def write_metrics_with_headings(results_dict, label):
-    print(f"\n=== DEBUG: write_metrics_with_headings called for {label} ===")
-    print(f"All keys in results_dict: {list(results_dict.keys())}")
     
-    # Debug: Print V-speeds keys specifically
-    vspeed_keys = [k for k in results_dict.keys() if "V-Speeds" in k or "VSpeed" in k]
-    print(f"V-speeds related keys: {vspeed_keys}")
     
     segment_definitions = {
         "Takeoff": {
@@ -91,7 +80,7 @@ def write_metrics_with_headings(results_dict, label):
             "end": "Cruise End Weight (lb)",
             "fields": [
                 "Cruise Time (min)", "Cruise Dist (NM)", "Cruise Fuel (lb)", "Cruise VKTAS (knots)",
-                "Cruise - First Level-Off Alt (ft)", "Fuel Remaining After Cruise (lb)"
+                "Cruise Max Mach", "Cruise - First Level-Off Alt (ft)", "Fuel Remaining After Cruise (lb)"
             ]
         },
         "Descent": {
@@ -122,30 +111,24 @@ def write_metrics_with_headings(results_dict, label):
 
         if config.get("vspeeds"):
             phase = config.get("vspeeds_phase", section)
-            print(f"\n--- Looking for V-speeds for {phase} ---")
-            print(f"Section: {section}, Phase: {phase}")
             
             # Use the primary key
             vspeeds_key = f"{phase} V-Speeds"
             
-            print(f"Looking for V-speeds with key: '{vspeeds_key}'")
-            print(f"Available keys: {list(results_dict.keys())}")
             
             if vspeeds_key in results_dict and results_dict[vspeeds_key] is not None:
                 vspeeds_data = results_dict[vspeeds_key]
-                print(f"Found V-speeds data: {vspeeds_data}")
                 
                 # Display the V-speeds
                 display_vspeeds(label, vspeeds_data, phase)
             else:
-                print(f"WARNING: No V-speeds found in results_dict for phase {phase}")
                 st.warning(f"V-speeds data not found for {phase}")
 
         for field in config.get("fields", []):
             if field in results_dict:
                 st.write(f"{field}: {results_dict[field]}")
 
-def plot_flight_profiles(tamarack_data, flatwing_data):
+def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results):
     st.subheader("Flight Profile Charts")
 
     def plot_dual_y(title, x, y1_label, y1_tam, y1_flat, y2_label, y2_tam, y2_flat):
@@ -203,53 +186,231 @@ def plot_flight_profiles(tamarack_data, flatwing_data):
         plot_single_y(title[0], "Distance (NM)", title[1], title[1], title[1])
 
     st.subheader("Fuel Remaining vs Distance")
-    if "fuel_distance_plot" in tamarack_data:
-        st.plotly_chart(tamarack_data["fuel_distance_plot"], use_container_width=True)
-    elif "fuel_distance_plot" in flatwing_data:
-        st.plotly_chart(flatwing_data["fuel_distance_plot"], use_container_width=True)
+    
+    # If we have both aircraft data, create a combined comparison plot using complete time history
+    if not tamarack_data.empty and not flatwing_data.empty:
+        # Create combined comparison plot
+        fig = go.Figure()
+        
+        # Add Tamarack data - use complete time history from results_df
+        if 'Distance (NM)' in tamarack_data.columns:
+            # Get initial fuel from results
+            tamarack_initial_fuel = tamarack_results.get('Total Fuel Burned (lb)', 0) + tamarack_results.get('Fuel Remaining (lb)', 0)
+            
+            # Calculate cumulative fuel burn from complete time history
+            tamarack_fuel_remaining = []
+            cumulative_fuel = 0
+            
+            # Use all data points - no skipping
+            for i in range(len(tamarack_data)):
+                if i == 0:
+                    # First point has initial fuel
+                    tamarack_fuel_remaining.append(tamarack_initial_fuel)
+                else:
+                    # Calculate fuel burn between points
+                    if 'Thrust (lb)' in tamarack_data.columns and 'Time (hr)' in tamarack_data.columns:
+                        # Estimate fuel burn from thrust and time
+                        avg_thrust = (tamarack_data['Thrust (lb)'].iloc[i-1] + tamarack_data['Thrust (lb)'].iloc[i]) / 2
+                        time_diff = tamarack_data['Time (hr)'].iloc[i] - tamarack_data['Time (hr)'].iloc[i-1]
+                        # Use SFC approximation (typical for jet aircraft)
+                        sfc = 0.7  # lb/hr/lb
+                        fuel_burn = avg_thrust * sfc * time_diff
+                        cumulative_fuel += fuel_burn
+                        tamarack_fuel_remaining.append(tamarack_initial_fuel - cumulative_fuel)
+                    else:
+                        # Fallback to linear interpolation
+                        tamarack_fuel_remaining.append(tamarack_initial_fuel * (1 - i/len(tamarack_data)))
+            
+            fig.add_trace(go.Scatter(
+                x=tamarack_data['Distance (NM)'],
+                y=tamarack_fuel_remaining,
+                mode='lines',
+                name='Tamarack',
+                line=dict(color='red', width=2)
+            ))
+        
+        # Add Flatwing data - use complete time history from results_df  
+        if 'Distance (NM)' in flatwing_data.columns:
+            # Get initial fuel from results
+            flatwing_initial_fuel = flatwing_results.get('Total Fuel Burned (lb)', 0) + flatwing_results.get('Fuel Remaining (lb)', 0)
+            
+            # Calculate cumulative fuel burn from complete time history
+            flatwing_fuel_remaining = []
+            cumulative_fuel = 0
+            
+            # Use all data points - no skipping
+            for i in range(len(flatwing_data)):
+                if i == 0:
+                    # First point has initial fuel
+                    flatwing_fuel_remaining.append(flatwing_initial_fuel)
+                else:
+                    # Calculate fuel burn between points
+                    if 'Thrust (lb)' in flatwing_data.columns and 'Time (hr)' in flatwing_data.columns:
+                        # Estimate fuel burn from thrust and time
+                        avg_thrust = (flatwing_data['Thrust (lb)'].iloc[i-1] + flatwing_data['Thrust (lb)'].iloc[i]) / 2
+                        time_diff = flatwing_data['Time (hr)'].iloc[i] - flatwing_data['Time (hr)'].iloc[i-1]
+                        # Use SFC approximation (typical for jet aircraft)
+                        sfc = 0.7  # lb/hr/lb
+                        fuel_burn = avg_thrust * sfc * time_diff
+                        cumulative_fuel += fuel_burn
+                        flatwing_fuel_remaining.append(flatwing_initial_fuel - cumulative_fuel)
+                    else:
+                        # Fallback to linear interpolation
+                        flatwing_fuel_remaining.append(flatwing_initial_fuel * (1 - i/len(flatwing_data)))
+            
+            fig.add_trace(go.Scatter(
+                x=flatwing_data['Distance (NM)'],
+                y=flatwing_fuel_remaining,
+                mode='lines',
+                name='Flatwing',
+                line=dict(color='blue', width=2)
+            ))
+        
+        # Update layout for comparison
+        fig.update_layout(
+            title="Fuel Remaining vs Distance - Comparison",
+            xaxis_title="Distance (NM)",
+            yaxis_title="Fuel Remaining (lb)",
+            showlegend=True,
+            xaxis=dict(
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='LightGrey',
+                showline=True,
+                linewidth=1,
+                linecolor='Grey',
+                mirror=True,
+                tickmode='auto',
+                nticks=10
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='LightGrey',
+                showline=True,
+                linewidth=1,
+                linecolor='Grey',
+                mirror=True
+            )
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+    else:
+        # Show single aircraft plot if only one aircraft is available
+        if not tamarack_data.empty and "fuel_distance_plot" in tamarack_results:
+            st.plotly_chart(tamarack_results["fuel_distance_plot"], use_container_width=True)
+        elif not flatwing_data.empty and "fuel_distance_plot" in flatwing_results:
+            st.plotly_chart(flatwing_results["fuel_distance_plot"], use_container_width=True)
 
 def display_simulation_results(
     tamarack_data, tamarack_results, flatwing_data, flatwing_results, v1_cut_enabled,
     dep_latitude, dep_longitude, arr_latitude, arr_longitude, distance_nm, bearing_deg,
     winds_temps_source, cruise_alt, departure_airport, arrival_airport, initial_fuel
 ):
-    # Debug: Print all keys in the results dictionaries
-    print("\n=== DEBUG: Tamarack Results Keys ===")
-    print("\n".join(tamarack_results.keys()))
-    print("\n=== DEBUG: Flatwing Results Keys ===")
-    print("\n".join(flatwing_results.keys()))
-    
-    # Debug: Print V-speeds specifically
-    for config_name, results in [("Tamarack", tamarack_results), ("Flatwing", flatwing_results)]:
-        print(f"\n=== DEBUG: {config_name} V-Speeds ===")
-        for key in ["Takeoff V-Speeds", "Approach V-Speeds"]:
-            if key in results:
-                print(f"{key}: {results[key]}")
-            else:
-                print(f"{key}: NOT FOUND")
     st.subheader("Flight Route Map")
     fig = go.Figure()
 
+    # Add range rings from departure airport using proper equirectangular projection
+    import math
+    
+    def calculate_range_ring_equirectangular(center_lat, center_lon, radius_nm, num_points=72):
+        """
+        Calculate range ring points using equirectangular projection.
+        This matches the map projection for consistent display.
+        """
+        ring_lats = []
+        ring_lons = []
+        
+        # Convert radius from nautical miles to degrees
+        # 1 nautical mile = 1/60 degree of latitude
+        radius_deg_lat = radius_nm / 60.0
+        
+        # For equirectangular projection, longitude scaling depends on latitude
+        cos_lat = math.cos(math.radians(center_lat))
+        
+        for i in range(num_points + 1):  # +1 to close the circle
+            angle = 2 * math.pi * i / num_points
+            
+            # Calculate offsets in the equirectangular projection
+            lat_offset = radius_deg_lat * math.cos(angle)
+            lon_offset = radius_deg_lat * math.sin(angle) / cos_lat if cos_lat != 0 else 0
+            
+            ring_lats.append(center_lat + lat_offset)
+            ring_lons.append(center_lon + lon_offset)
+        
+        return ring_lats, ring_lons
+    
+    # Calculate range ring intervals based on total distance
+    max_range = distance_nm * 1.2  # Extend rings 20% beyond destination
+    if max_range <= 500:
+        ring_interval = 100  # 100 NM intervals for shorter flights
+    elif max_range <= 1500:
+        ring_interval = 200  # 200 NM intervals for medium flights
+    else:
+        ring_interval = 500  # 500 NM intervals for long flights
+    
+    # Add regular interval range rings
+    for ring_distance in range(ring_interval, int(max_range) + ring_interval, ring_interval):
+        ring_lats, ring_lons = calculate_range_ring_equirectangular(
+            dep_latitude, dep_longitude, ring_distance
+        )
+        
+        fig.add_trace(go.Scattergeo(
+            lat=ring_lats,
+            lon=ring_lons,
+            mode='lines',
+            line=dict(width=1, color='gray', dash='dot'),
+            name=f'{ring_distance} NM',
+            showlegend=False,
+            hovertemplate=f'Range: {ring_distance} NM<extra></extra>'
+        ))
+    
+    # Add special ring for exact destination distance
+    if distance_nm > 0:
+        dest_ring_lats, dest_ring_lons = calculate_range_ring_equirectangular(
+            dep_latitude, dep_longitude, distance_nm
+        )
+        
+        fig.add_trace(go.Scattergeo(
+            lat=dest_ring_lats,
+            lon=dest_ring_lons,
+            mode='lines',
+            line=dict(width=2, color='orange', dash='solid'),
+            name=f'Destination: {distance_nm:.1f} NM',
+            showlegend=True,
+            hovertemplate=f'Destination Range: {distance_nm:.1f} NM<extra></extra>'
+        ))
+
+    # Add flight route
     fig.add_trace(go.Scattergeo(
         lat=[dep_latitude, arr_latitude],
         lon=[dep_longitude, arr_longitude],
         mode='lines',
-        line=dict(width=2, color='blue'),
+        line=dict(width=3, color='blue'),
         name='Route'
     ))
+    
+    # Add departure airport
     fig.add_trace(go.Scattergeo(
         lat=[dep_latitude],
         lon=[dep_longitude],
         mode='markers',
-        marker=dict(size=10, color='green'),
-        name='Departure'
+        marker=dict(size=12, color='green', symbol='circle'),
+        name='Departure',
+        text=[departure_airport],
+        hovertemplate='%{text}<br>Departure<extra></extra>'
     ))
+    
+    # Add arrival airport
     fig.add_trace(go.Scattergeo(
         lat=[arr_latitude],
         lon=[arr_longitude],
         mode='markers',
-        marker=dict(size=10, color='red'),
-        name='Arrival'
+        marker=dict(size=12, color='red', symbol='circle'),
+        name='Arrival',
+        text=[arrival_airport],
+        hovertemplate='%{text}<br>Arrival<extra></extra>'
     ))
     fig.update_layout(
         geo=dict(
@@ -292,4 +453,4 @@ def display_simulation_results(
         elif results.get("error"):
             st.error(results["error"])
 
-    plot_flight_profiles(tamarack_data, flatwing_data)
+    plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results)

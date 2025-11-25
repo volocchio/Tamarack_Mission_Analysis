@@ -1,4 +1,6 @@
 from math import radians, sin, cos, sqrt, degrees, pi, tan
+import os
+from datetime import datetime
 
 import streamlit as st
 import pandas as pd
@@ -6,6 +8,10 @@ import numpy as np
 import plotly.graph_objects as go
 
 from aircraft_config import AIRCRAFT_CONFIG
+try:
+    from aircraft_config import TURBOPROP_PARAMS
+except ImportError:
+    TURBOPROP_PARAMS = {}
 from flight_physics import atmos, vspeeds, physics, predict_roc, next_step_altitude
 from utils import load_airports
 
@@ -39,6 +45,131 @@ def compute_segment_fuel_remaining(total_initial_fuel, fuel_burn_sequence):
     fuel_remaining_dict["Fuel Remaining Final (lb)"] = round(remaining_fuel)
 
     return fuel_remaining_dict
+
+# Global timestamp to ensure both aircraft use same folder
+_global_timestamp = None
+
+def get_global_timestamp():
+    """Get or create global timestamp for this simulation run"""
+    global _global_timestamp
+    if _global_timestamp is None:
+        _global_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return _global_timestamp
+
+def create_output_file(results_df, aircraft_model, modification, dep_airport, arr_airport, 
+                      initial_fuel, payload, cruise_alt, winds_temps_source):
+    """
+    Create output file with time history data at exact 5-second intervals.
+    
+    Args:
+        results_df (pd.DataFrame): Simulation results DataFrame
+        aircraft_model (str): Aircraft model (e.g., "CJ1")
+        modification (str): Aircraft modification (e.g., "Flatwing", "Tamarack")
+        dep_airport (str): Departure airport code
+        arr_airport (str): Arrival airport code
+        initial_fuel (float): Initial fuel load in pounds
+        payload (float): Payload weight in pounds
+        cruise_alt (int): Cruise altitude in feet
+        winds_temps_source (str): Wind and temperature source
+    
+    Returns:
+        str: Path to the created output file
+    """
+    # Use global timestamp so both aircraft files go in same folder
+    timestamp = get_global_timestamp()
+    output_dir = os.path.join("output", timestamp)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Data is already collected at exact 5-second intervals during simulation
+    # No need for post-processing sampling
+    output_df = results_df.copy()
+    
+    # Select and format columns with proper significant digits
+    # Remove Time (hr) column, keep only Time (s)
+    formatted_df = pd.DataFrame()
+    
+    # Time in seconds (column 1)
+    if 'Time (s)' in output_df.columns:
+        formatted_df['Time (s)'] = output_df['Time (s)'].round(0).astype(int)
+    
+    # Altitude - 0 significant digits (integer)
+    if 'Altitude (ft)' in output_df.columns:
+        formatted_df['Altitude (ft)'] = output_df['Altitude (ft)'].round(0).astype(int)
+    
+    # Distance - 1 significant digit
+    if 'Distance (NM)' in output_df.columns:
+        formatted_df['Distance (NM)'] = output_df['Distance (NM)'].round(1)
+    
+    # VKTAS - 0 significant digits (integer)
+    if 'VKTAS (kts)' in output_df.columns:
+        formatted_df['VKTAS (kts)'] = output_df['VKTAS (kts)'].round(0).astype(int)
+    
+    # VKIAS - 0 significant digits (integer)
+    if 'VKIAS (kts)' in output_df.columns:
+        formatted_df['VKIAS (kts)'] = output_df['VKIAS (kts)'].round(0).astype(int)
+    
+    # ROC - 0 significant digits (integer)
+    if 'ROC (fpm)' in output_df.columns:
+        formatted_df['ROC (fpm)'] = output_df['ROC (fpm)'].round(0).astype(int)
+    
+    # Thrust - 0 significant digits (integer)
+    if 'Thrust (lb)' in output_df.columns:
+        formatted_df['Thrust (lb)'] = output_df['Thrust (lb)'].round(0).astype(int)
+    
+    # Drag - 0 significant digits (integer)
+    if 'Drag (lb)' in output_df.columns:
+        formatted_df['Drag (lb)'] = output_df['Drag (lb)'].round(0).astype(int)
+    
+    # Weight - 0 significant digits (integer)
+    if 'Weight (lb)' in output_df.columns:
+        formatted_df['Weight (lb)'] = output_df['Weight (lb)'].round(0).astype(int)
+    
+    # Fuel Remaining - 0 significant digits (integer)
+    if 'Fuel Remaining (lb)' in output_df.columns:
+        formatted_df['Fuel Remaining (lb)'] = output_df['Fuel Remaining (lb)'].round(0).astype(int)
+    
+    # Fuel Flow - 0 significant digits (integer)
+    if 'Fuel Flow (lb/hr)' in output_df.columns:
+        formatted_df['Fuel Flow (lb/hr)'] = output_df['Fuel Flow (lb/hr)'].round(0).astype(int)
+    
+    # Mach - 3 significant digits
+    if 'Mach' in output_df.columns:
+        formatted_df['Mach'] = output_df['Mach'].round(3)
+    
+    # Gradient - 1 significant digit
+    if 'Gradient (%)' in output_df.columns:
+        formatted_df['Gradient (%)'] = output_df['Gradient (%)'].round(1)
+    
+    # Create filename
+    filename = f"{aircraft_model}_{modification}_{dep_airport}_to_{arr_airport}_{timestamp}.csv"
+    filepath = os.path.join(output_dir, filename)
+    
+    # Add comprehensive metadata as header
+    metadata = [
+        f"Flight Simulation Results - {aircraft_model} {modification}",
+        f"Route: {dep_airport} to {arr_airport}",
+        f"Initial Fuel: {initial_fuel:.0f} lb",
+        f"Payload: {payload:.0f} lb",
+        f"Cruise Altitude: {cruise_alt:.0f} ft",
+        f"Winds/Temps Source: {winds_temps_source}",
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Original Data Points: {len(results_df)}",
+        f"Sampled Data Points (5-sec intervals): {len(formatted_df)}",
+        f"Time Range: {formatted_df['Time (s)'].min():.0f} - {formatted_df['Time (s)'].max():.0f} seconds",
+        f"Exact 5-second intervals, no skipped rows",
+        ""
+    ]
+    
+    # Write to CSV with metadata header (prevent blank lines on Windows)
+    with open(filepath, 'w', newline='') as f:
+        # Write metadata
+        for line in metadata:
+            f.write(f"# {line}\n")
+        
+        # Write formatted DataFrame with a consistent line terminator
+        formatted_df.to_csv(f, index=False, lineterminator='\n')
+    
+    return filepath
 
 # --- Helper Functions ---
 def haversine_with_bearing(
@@ -178,6 +309,7 @@ def run_simulation(
     cruise_alt: int,
     winds_temps_source: str,
     v1_cut_enabled: bool,
+    write_output_file: bool = True,
 ):
     """Simulate a flight between two airports.
     
@@ -194,9 +326,10 @@ def run_simulation(
         cruise_alt: Cruise altitude in feet.
         winds_temps_source: Source for winds and temperatures.
         v1_cut_enabled: Whether V1 cut is enabled.
+        write_output_file: Whether to write the output file.
 
     Returns:
-        tuple: (flight_data, results, dep_lat, dep_lon, arr_lat, arr_lon)
+        tuple: (flight_data, results, dep_lat, dep_lon, arr_lat, arr_lon, output_file_path)
     """
     # Initialize variables
     alt = 0
@@ -277,8 +410,14 @@ def run_simulation(
     
     airports = load_airports()
     try:
+        # Convert input airport codes to uppercase to match the loaded data
+        dep_airport = dep_airport.upper()
+        arr_airport = arr_airport.upper()
+        
+        # Lookup using the now-uppercase codes
         dep_data = airports[airports['ident'] == dep_airport].iloc[0]
         arr_data = airports[airports['ident'] == arr_airport].iloc[0]
+        
         dep_latitude = dep_data['latitude_deg']
         dep_longitude = dep_data['longitude_deg']
         dep_elev = dep_data['elevation_ft']
@@ -286,7 +425,7 @@ def run_simulation(
         arr_longitude = arr_data['longitude_deg']
         arr_elev = dep_data['elevation_ft']  # Assume same elevation for simplicity, or fix to arr_data
     except IndexError:
-        return pd.DataFrame(), {"error": "Invalid airport code(s)."}, 0, 0, 0, 0  # Return empty results if airport lookup fails
+        return pd.DataFrame(), {"error": "Invalid airport code(s)."}, 0, 0, 0, 0, ""  # Return empty results if airport lookup fails
 
     total_dist, bearing = haversine_with_bearing(dep_latitude, dep_longitude, arr_latitude, arr_longitude)
     remaining_dist = total_dist
@@ -305,6 +444,11 @@ def run_simulation(
 
     # Placeholder winds and temps aloft data (wind direction in degrees, speed in knots, temp in °C)
     winds_temps_data = {
+        "No Wind": {
+            18000: (0, 0, -20),  # FL180 - zero wind
+            30000: (0, 0, -35),  # FL300 - zero wind
+            39000: (0, 0, -45),  # FL390 - zero wind
+        },
         "Current Conditions": {
             18000: (310, 30, -20),  # FL180
             30000: (310, 40, -35),  # FL300
@@ -327,18 +471,20 @@ def run_simulation(
     a = b ** 2 / s * (1 + 1.9 * h / b)
     k = 1 / (3.14159 * e * a)
     max_payload = mzfw - bow
-    zfw = bow + payload  # Zero Fuel Weight
-    rw = bow + payload + fuel_start  # Ramp Weight
+    
+    # Check constraints and collect all exceedance messages
+    exceedances = []
+    if payload > max_payload:
+        exceedances.append(f"{mod}: Payload exceeds maximum payload of {int(max_payload)} lb by {int(payload - max_payload)} lb.")
+    
+    # Clamp payload to maximum allowable to prevent ZFW from exceeding MZFW
+    effective_payload = min(payload, max_payload)
+    
+    zfw = bow + effective_payload  # Zero Fuel Weight
+    rw = bow + effective_payload + fuel_start  # Ramp Weight
     tow = rw - taxi_fuel  # Takeoff Weight (after taxiing)
     mission_fuel = fuel_start - reserve_fuel - taxi_fuel
     mission_fuel_remain = mission_fuel
-
-    # Check constraints and collect all exceedance messages
-    exceedances = []
-    if zfw > mzfw:
-        exceedances.append(f"{mod}: Zero Fuel Weight exceeds MZFW of {int(mzfw)} lb by {int(zfw - mzfw)} lb. Reduce payload.")
-    if payload > max_payload:
-        exceedances.append(f"{mod}: Payload exceeds maximum payload of {int(max_payload)} lb by {int(payload - max_payload)} lb.")
     if fuel_start > max_fuel:
         exceedances.append(f"{mod}: Fuel exceeds maximum fuel capacity of {int(max_fuel)} lb by {int(fuel_start - max_fuel)} lb.")
     if tow > mtow:
@@ -346,7 +492,7 @@ def run_simulation(
     if rw > mrw:
         exceedances.append(f"{mod}: Ramp Weight exceeds MRW of {int(mrw)} lb by {int(rw - mrw)} lb.")
     if exceedances:
-        return pd.DataFrame(), {"exceedances": exceedances}, dep_latitude, dep_longitude, arr_latitude, arr_longitude
+        return pd.DataFrame(), {"exceedances": exceedances}, 0, 0, 0, 0, ""
 
     thrust_factor = 1
     v_true_fps = 0
@@ -378,6 +524,7 @@ def run_simulation(
     cruise_dist = 0
     cruise_fuel = 0
     max_m_reached = 0
+    cruise_avg_vktas = 0
     dist_at_35 = 0
     dist_touchdown = 0
     dist_land = 0
@@ -508,11 +655,15 @@ def run_simulation(
         }
 
     fuel_burn_history = []
+    weight_data = []
+    induced_drag_data = []
+    fuel_remaining_data = []
+    fuel_flow_data = []  # Fuel flow in lbs per hour
 
     while segment != 14:
         if mission_fuel_remain < 0 and alt > alt_land:
             final_results = {"error": f"Not Enough Fuel for {mod}."}
-            return pd.DataFrame(), final_results, dep_latitude, dep_longitude, arr_latitude, arr_longitude
+            return pd.DataFrame(), final_results, dep_latitude, dep_longitude, arr_latitude, arr_longitude, ""
 
         # Reset vspeed_flag when entering segment 0, 12, or 13
         if segment in (0, 12, 13) and vspeed_flag != 0:
@@ -830,17 +981,42 @@ def run_simulation(
         fob = fuel_start - fuel_burned - taxi_fuel
         fuel_burn_history.append(fuel_burned)
 
-        time_data.append(t / 3600)
-        alt_data.append(alt)
-        dist_data.append(dist_ft / 6076.12)
-        vktas_data.append(vktas)
-        vkias_data.append(vkias)
-        roc_data.append(roc_fpm)
-        thrust_data.append(thrust)
-        drag_data.append(drag + drag_gnd)
-        segment_data.append(segment)
-        mach_data.append(m)
-        gradient_data.append(gradient)
+        # Only collect data at exact 5-second simulated intervals using an accumulator
+        # Initialize next_sample_time the first time we enter the loop
+        if 'next_sample_time' not in locals():
+            next_sample_time = 0.0
+            sample_interval = 5.0
+        
+        if t + 1e-9 >= next_sample_time:  # small epsilon to avoid float drift
+            time_data.append(t / 3600)
+            alt_data.append(alt)
+            dist_data.append(dist_ft / 6076.12)
+            vktas_data.append(vktas)
+            vkias_data.append(vkias)
+            roc_data.append(roc_fpm)
+            thrust_data.append(thrust)
+            drag_data.append(drag + drag_gnd)
+            segment_data.append(segment)
+            mach_data.append(m)
+            gradient_data.append(gradient)
+            
+            # Add additional time history data
+            weight_data.append(w)
+            induced_drag_data.append(drag)  # Pure induced drag (without ground effect)
+            fuel_remaining_data.append(fob)
+            
+            # Calculate fuel flow in lbs per hour based on change since last sample
+            if len(fuel_remaining_data) > 1:
+                recent_fuel_change = fuel_remaining_data[-2] - fuel_remaining_data[-1]
+                fuel_flow_lbs_per_sec = recent_fuel_change / sample_interval
+                fuel_flow_lbs_per_hour = max(0, fuel_flow_lbs_per_sec * 3600)
+                fuel_flow_data.append(fuel_flow_lbs_per_hour)
+            else:
+                fuel_flow_data.append(0)
+            
+            # Advance the next sample time by fixed 5-second steps until it is ahead of current t
+            while next_sample_time <= t + 1e-9:
+                next_sample_time += sample_interval
 
         # Track segment start weights and calculate fuel remaining at each phase
         if segment == 0 and takeoff_start_weight == 0:  # Start of takeoff
@@ -942,7 +1118,7 @@ def run_simulation(
             cruise_time = t - climb_time
             cruise_dist = (dist_ft / 6076.12) - climb_dist
             cruise_fuel = fuel_burned - climb_fuel
-            max_m_reached = m
+            max_m_reached = max(max_m_reached, m)
         if v_descent is not None and vkias > v_descent and segment == 8:
             segment = 9
         if alt < 10000 and segment in (8, 9):
@@ -984,6 +1160,10 @@ def run_simulation(
     landing_fuel_remaining = initial_fuel - taxi_fuel - fuel_burned
     
     # Collect final results
+    # Compute average TAS during cruise (segments 6 and 7)
+    cruise_indices = [i for i, seg in enumerate(segment_data) if seg in (6, 7)]
+    if cruise_indices:
+        cruise_avg_vktas = float(np.mean([vktas_data[i] for i in cruise_indices]))
     final_results.update({
         # Takeoff section
         "Takeoff Roll Dist (ft)": int(takeoff_roll_dist) if takeoff_roll_dist > 0 else None,
@@ -1011,7 +1191,8 @@ def run_simulation(
         "Cruise Start Weight (lb)": int(cruise_start_weight) if cruise_start_weight > 0 else None,
         "Cruise End Weight (lb)": int(cruise_end_weight) if cruise_end_weight > 0 else None,
         "Cruise Fuel (lb)": int(cruise_fuel) if cruise_fuel > 0 else None,
-        "Cruise VKTAS (knots)": int(max_m_reached * 661.48) if max_m_reached > 0 else None,
+        "Cruise VKTAS (knots)": int(cruise_avg_vktas) if cruise_avg_vktas > 0 else None,
+        "Cruise Max Mach": round(max_m_reached, 3) if max_m_reached > 0 else None,
         "Cruise - First Level-Off Alt (ft)": int(first_level_off_alt) if first_level_off_alt is not None else None,
         "Step Altitudes (ft)": step_altitudes if step_altitudes else None,
         "Fuel Remaining After Cruise (lb)": int(cruise_fuel_remaining) if cruise_fuel_remaining > 0 else None,
@@ -1092,28 +1273,63 @@ def run_simulation(
         title="Fuel Remaining vs Distance",
         xaxis_title="Distance (NM)",
         yaxis_title="Fuel Remaining (lb)",
-        showlegend=True
+        showlegend=True,
+        xaxis=dict(
+            showgrid=True,
+            gridwidth=1,
+            gridcolor='LightGrey',
+            showline=True,
+            linewidth=1,
+            linecolor='Grey',
+            mirror=True,
+            tickmode='auto',
+            nticks=10
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridwidth=1,
+            gridcolor='LightGrey',
+            showline=True,
+            linewidth=1,
+            linecolor='Grey',
+            mirror=True
+        )
     )
     
-    # Debug: Log final_results before returning
-    print("\n=== Final Results from run_simulation ===")
-    print(f"Takeoff V-Speeds: {final_results['Takeoff V-Speeds']}")
-    print(f"Approach V-Speeds: {final_results['Approach V-Speeds']}")
-    print(f"Total Distance (NM): {int(dist_ft / 6076.12)}")
+    # Store the figure and fuel burn history in the results
+    final_results["fuel_distance_plot"] = fig
+    final_results["fuel_burn_history"] = fuel_burn_history
+    
+    # Final results prepared; no terminal debug output
 
-    # Create the results DataFrame
+    # Create the results DataFrame with ALL time history parameters
     results_df = pd.DataFrame({
         'Time (hr)': time_data,
+        'Time (s)': [t * 3600 for t in time_data],  # Time in seconds
         'Altitude (ft)': alt_data,
         'Distance (NM)': dist_data,
         'VKTAS (kts)': vktas_data,
         'VKIAS (kts)': vkias_data,
         'ROC (fpm)': roc_data,
+        'ROD (fpm)': [r if r < 0 else 0 for r in roc_data],  # Rate of Descent (positive values)
         'Thrust (lb)': thrust_data,
         'Drag (lb)': drag_data,
+        'Induced Drag (lb)': induced_drag_data,
+        'Weight (lb)': weight_data,
+        'Fuel Remaining (lb)': fuel_remaining_data,
+        'Fuel Flow (lb/hr)': fuel_flow_data,
         'Segment': segment_data,
         'Mach': mach_data,
         'Gradient (%)': gradient_data,
+        'Flight Phase': ['Takeoff' if s == 0 else 'Climb' if s in [1,2,3] else 'Cruise' if s in [4,5,6,7] else 'Descent' if s in [8,9,10,11] else 'Landing' if s in [12,13] else 'Complete' for s in segment_data]
     })
     
-    return results_df, final_results, dep_latitude, dep_longitude, arr_latitude, arr_longitude
+    # Create output file with time history data (if enabled)
+    output_file_path = ""
+    if write_output_file:
+        output_file_path = create_output_file(
+            results_df, aircraft, mod, dep_airport, arr_airport,
+            initial_fuel, payload, cruise_alt, winds_temps_source
+        )
+    
+    return results_df, final_results, dep_latitude, dep_longitude, arr_latitude, arr_longitude, output_file_path

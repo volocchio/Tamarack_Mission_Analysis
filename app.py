@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 from aircraft_config import AIRCRAFT_CONFIG
@@ -15,21 +16,50 @@ and visualizes the flight profile with charts.
 
 # Load airports data
 airports_df = load_airports()
-airport_display_names = airports_df["display_name"].tolist()
+
+# Ensure we have the required columns
+if 'display_name' not in airports_df.columns or 'ident' not in airports_df.columns:
+    st.error("Error: Required columns not found in airports data")
+    st.stop()
+
+# Create a mapping of upper case display names to original display names
+display_name_mapping = {name.upper(): name for name in airports_df["display_name"].unique()}
+
+# Get the list of display names for the selectbox (using original case)
+airport_display_names = list(display_name_mapping.values())
+
+# Create a reverse mapping from display name to airport info
+display_name_to_info = {}
+for _, row in airports_df.iterrows():
+    display_name = row["display_name"]
+    if display_name not in display_name_to_info:
+        display_name_to_info[display_name] = row
 
 # Initialize session state
 if 'initial_values' not in st.session_state:
     st.session_state.initial_values = {}
+if 'last_weight_option' not in st.session_state:
+    st.session_state.last_weight_option = None
 
 # Sidebar inputs
 with st.sidebar:
     st.header("Flight Parameters")
     
     # Aircraft model selection
-    aircraft_types = ["CJ", "CJ1", "CJ1+", "M2", "CJ2", "CJ2+", "CJ3", "CJ3+"]
-    aircraft_model = st.selectbox("Aircraft Model", aircraft_types, 
-                                 index=aircraft_types.index("CJ1") if "CJ1" in aircraft_types else 0,
-                                 key="aircraft_model")
+    aircraft_types = ["CJ", "CJ1", "CJ1+", "M2", "CJ2", "CJ2+", "CJ3", "CJ3+", "C208", "C208B", "C208EX"]
+    aircraft_model = st.selectbox("Aircraft Model", aircraft_types, index=aircraft_types.index("CJ1") if "CJ1" in aircraft_types else 0, key="aircraft_model")
+    
+    # Update BOW and other values when aircraft changes
+    if 'last_aircraft' not in st.session_state or st.session_state.last_aircraft != aircraft_model:
+        st.session_state.last_aircraft = aircraft_model
+        # Clear Tamarack BOW to force update
+        if 'bow_tamarack' in st.session_state:
+            del st.session_state.bow_tamarack
+        # Clear payload inputs to reset them
+        if 'payload_input_flatwing' in st.session_state:
+            del st.session_state.payload_input_flatwing
+        if 'payload_input_tamarack' in st.session_state:
+            del st.session_state.payload_input_tamarack
 
     # Display both aircraft images
     if aircraft_model:
@@ -50,21 +80,36 @@ with st.sidebar:
         st.error(f"No modifications available for aircraft model {aircraft_model}.")
         st.stop()
 
-    # Get default configuration
-    available_configs = [(a, m) for (a, m) in AIRCRAFT_CONFIG if a == aircraft_model]
-    def_config = "Tamarack" if "Tamarack" in mods_available else "Flatwing"
-    config = AIRCRAFT_CONFIG.get((aircraft_model, def_config))
-    if not config:
-        st.error(f"No configuration found for {aircraft_model} with {def_config} modification.")
+    # Get default configuration (Flatwing)
+    flatwing_config = AIRCRAFT_CONFIG.get((aircraft_model, "Flatwing"))
+    if not flatwing_config:
+        st.error(f"No Flatwing configuration found for {aircraft_model}.")
         st.stop()
 
-    # Extract configuration values
+    # Get Tamarack configuration if available
+    tamarack_config = AIRCRAFT_CONFIG.get((aircraft_model, "Tamarack"))
+    
+    # Extract Flatwing configuration values
     try:
+        config_values = list(flatwing_config)[:35]
         s, b, e, h, sweep_25c, sfc, engines_orig, thrust_mult, ceiling, CL0, CLA, cdo, dcdo_flap1, dcdo_flap2, \
             dcdo_flap3, dcdo_gear, mu_to, mu_lnd, bow, mzfw, mrw, mtow, max_fuel, \
             taxi_fuel_default, reserve_fuel_default, mmo, VMO, clmax, clmax_1, clmax_2, m_climb, \
-            v_climb, roc_min, m_descent, v_descent = config
-        max_payload = mzfw - bow
+            v_climb, roc_min, m_descent, v_descent = config_values
+            
+        # Store MZFW and BOW for Flatwing
+        flatwing_mzfw = mzfw
+        flatwing_bow = bow
+        
+        # Get Tamarack MZFW and BOW if available
+        if tamarack_config:
+            tamarack_values = list(tamarack_config)[:35]
+            tamarack_mzfw = tamarack_values[19]  # MZFW is at index 19
+            tamarack_bow = tamarack_values[18]   # BOW is at index 18
+        else:
+            tamarack_mzfw = mzfw
+            tamarack_bow = bow
+            
     except ValueError as e:
         st.error(f"Error extracting configuration values: {str(e)}")
         st.stop()
@@ -73,13 +118,20 @@ with st.sidebar:
     st.subheader('Flight Plan')
     departure_airport = st.selectbox(
         "Departure Airport",
-        airport_display_names,
-        index=next((i for i, name in enumerate(airport_display_names) if "KSZT" in name), 0)
+        options=airport_display_names,
+        index=next((i for i, name in enumerate(airport_display_names) 
+                  if name.startswith("KSZT")), 0),
+        format_func=lambda x: x,
+        key="departure_airport"
     )
+    
     arrival_airport = st.selectbox(
         "Arrival Airport",
-        airport_display_names,
-        index=next((i for i, name in enumerate(airport_display_names) if "KSAN" in name), 0)
+        options=airport_display_names,
+        index=next((i for i, name in enumerate(airport_display_names) 
+                  if name.startswith("KSAN")), 0),
+        format_func=lambda x: x,
+        key="arrival_airport"
     )
 
     # Weight mode selection
@@ -89,22 +141,30 @@ with st.sidebar:
         "Max Payload (Fill Payload to MZFW, Adjust Fuel to MRW)"
     ], index=0, key="weight_option")
 
+    # Track if weight option changed
+    weight_option_changed = st.session_state.get('last_weight_option') != st.session_state.weight_option
+    st.session_state.last_weight_option = st.session_state.weight_option
+
     # Get initial values based on weight option
     if weight_option == "Max Fuel (Fill Tanks, Adjust Payload to MRW)":
         initial_fuel = float(max_fuel)
-        initial_payload = float(min(max_payload, mrw - (bow + max_fuel)))
-        rw = bow + initial_payload + initial_fuel
+        initial_payload = float(min(flatwing_mzfw - flatwing_bow, mrw - (flatwing_bow + max_fuel)))
+        rw = flatwing_bow + initial_payload + initial_fuel
         tow = rw - taxi_fuel_default
         if tow > mtow:
-            initial_fuel = mtow - (bow + initial_payload) + taxi_fuel_default
+            initial_fuel = mtow - (flatwing_bow + initial_payload) + taxi_fuel_default
             if initial_fuel < 0:
                 initial_fuel = 0
-                initial_payload = mtow - bow + taxi_fuel_default
+                initial_payload = mtow - flatwing_bow + taxi_fuel_default
     elif weight_option == "Max Payload (Fill Payload to MZFW, Adjust Fuel to MRW)":
-        initial_payload = float(max_payload)
-        initial_fuel = float(min(max_fuel, mrw - (bow + max_payload)))
+        initial_payload = float(flatwing_mzfw - flatwing_bow)  # Calculate max payload as MZFW - BOW
+        initial_fuel = float(min(max_fuel, mrw - (flatwing_bow + initial_payload)))
         if initial_fuel == max_fuel:
-            initial_payload = float(min(max_payload, mrw - (bow + max_fuel)))
+            initial_payload = float(min(flatwing_mzfw - flatwing_bow, mrw - (flatwing_bow + max_fuel)))
+        
+        # Update Tamarack payload in session state when Max Payload is selected
+        if 'bow_tamarack' in st.session_state:
+            tamarack_max_payload = max(0, tamarack_mzfw - st.session_state.bow_tamarack)
     else:
         # Set initial values based on aircraft model
         if aircraft_model == "M2":
@@ -138,24 +198,43 @@ with st.sidebar:
         bow_f = st.number_input(
             "BOW (lb)",
             min_value=0,
-            max_value=int(mzfw),
-            value=int(bow),
+            max_value=int(flatwing_mzfw),
+            value=int(flatwing_bow),
             step=100,
             help="Basic Operating Weight (Empty Weight + pilot)",
-            key="bow_input_flatwing"
+            key="bow_input_flatwing",
+            on_change=lambda: st.session_state.update({"bow_changed": True})
         )
         
-        # Update max payload based on BOW
-        max_payload_f = max(0, mzfw - bow_f)
+        # Calculate max payload based on BOW and MZFW
+        max_payload_f = max(0, flatwing_mzfw - bow_f)
         
+        # Calculate the payload value before creating the widget
+        payload_value = 0
+        # Always ensure the payload doesn't exceed max_payload_f
+        current_payload = st.session_state.get('payload_input_flatwing', 0)
+        payload_value = min(current_payload, int(max_payload_f))
+        
+        # Update payload if we're in Max Payload mode and either:
+        # 1. The weight option just changed to Max Payload, or
+        # 2. BOW was just modified while in Max Payload mode
+        if weight_option == "Max Payload (Fill Payload to MZFW, Adjust Fuel to MRW)" and \
+           (weight_option_changed or st.session_state.get("bow_changed", False)):
+            payload_value = int(max_payload_f)
+        
+        # Reset the flag after processing
+        st.session_state["bow_changed"] = False
+        
+        # Ensure the payload input never exceeds max_payload_f
         payload_input_f = st.number_input(
             "Payload (lb)",
             min_value=0,
             max_value=int(max_payload_f),
-            value=st.session_state.initial_values.get('payload', int(initial_payload)),
+            value=payload_value,
             step=100,
-            help=f"Maximum payload: {int(max_payload_f):,} lb (MZFW - BOW)",
-            key="payload_input_flatwing"
+            help=f"Maximum payload: {int(max_payload_f):,} lb (MZFW: {int(flatwing_mzfw):,} - BOW)",
+            key="payload_input_flatwing",
+            on_change=lambda: st.session_state.update({"payload_changed_f": True})
         )
     
     with col2:
@@ -200,32 +279,74 @@ with st.sidebar:
     # Weight inputs - Tamarack
     st.subheader('Tamarack Weight Adjustment')
     
+    # Determine if we're in comparison mode (both Flatwing and Tamarack are shown)
+    comparison_mode = tamarack_config is not None
+    
+    # Initialize Tamarack BOW if not set
+    if 'bow_tamarack' not in st.session_state:
+        if comparison_mode:
+            # In comparison mode, set Tamarack BOW based on Flatwing BOW
+            bow_diff = 65 if aircraft_model == "M2" else 75
+            st.session_state.bow_tamarack = st.session_state.get('bow_flatwing', int(flatwing_bow)) + bow_diff
+        else:
+            # In single config mode, use the configured Tamarack BOW
+            st.session_state.bow_tamarack = int(tamarack_bow)
+    
+    # Update Tamarack BOW if Flatwing BOW changes in comparison mode
+    if comparison_mode and st.session_state.get('bow_changed', False):
+        bow_diff = 65 if aircraft_model == "M2" else 75
+        st.session_state.bow_tamarack = st.session_state.bow_flatwing + bow_diff
+    
     # Create three columns for the inputs
     col4, col5, col6 = st.columns(3)
     
     with col4:
-        # First column - BOW and Payload
+        # BOW input for Tamarack
         bow_t = st.number_input(
             "BOW (lb)",
             min_value=0,
-            max_value=int(mzfw),
-            value=int(bow),
+            max_value=int(tamarack_mzfw),
+            value=st.session_state.bow_tamarack,
             step=100,
-            help="Basic Operating Weight (Empty Weight + pilot)",
-            key="bow_input_tamarack"
+            help="Basic Operating Weight (Empty Weight + pilot)" + 
+                 (" - 75 lbs heavier than Flatwing (65 lbs for M2)" if comparison_mode else ""),
+            key="bow_input_tamarack",
+            disabled=comparison_mode,  # Disable in comparison mode
+            on_change=lambda: st.session_state.update({"bow_changed_t": True})
         )
         
-        # Update max payload based on BOW
-        max_payload_t = max(0, mzfw - bow_t)
+        # Store the BOW in session state
+        st.session_state.bow_tamarack = bow_t
         
+        # Calculate max payload based on current BOW and Tamarack MZFW
+        max_payload_t = max(0, tamarack_mzfw - bow_t)
+        
+        # Calculate the payload value before creating the widget
+        payload_value = 0
+        # Always ensure the payload doesn't exceed max_payload_t
+        current_payload = st.session_state.get('payload_input_tamarack', 0)
+        payload_value = min(current_payload, int(max_payload_t))
+        
+        # Update payload if we're in Max Payload mode and either:
+        # 1. The weight option just changed to Max Payload, or
+        # 2. BOW was just modified while in Max Payload mode
+        if weight_option == "Max Payload (Fill Payload to MZFW, Adjust Fuel to MRW)" and \
+           (weight_option_changed or st.session_state.get("bow_changed_t", False)):
+            payload_value = int(max_payload_t)
+        
+        # Reset the flag after processing
+        st.session_state["bow_changed_t"] = False
+        
+        # Ensure the payload input never exceeds max_payload_t
         payload_input_t = st.number_input(
             "Payload (lb)",
             min_value=0,
             max_value=int(max_payload_t),
-            value=st.session_state.initial_values.get('payload', int(initial_payload)),
+            value=payload_value,
             step=100,
-            help=f"Maximum payload: {int(max_payload_t):,} lb (MZFW - BOW)",
-            key="payload_input_tamarack"
+            help=f"Maximum payload: {int(max_payload_t):,} lb (MZFW: {int(tamarack_mzfw):,} - BOW)",
+            key="payload_input_tamarack",
+            on_change=lambda: st.session_state.update({"payload_changed_t": True})
         )
     
     with col5:
@@ -269,7 +390,7 @@ with st.sidebar:
 
     # Wing type selection
     st.subheader('Aircraft Configuration')
-    wing_type = st.radio("Wing Type", ["Flatwing", "Tamarack", "Comparison"], index=0, key="wing_type")
+    wing_type = st.radio("Wing Type", ["Flatwing", "Tamarack", "Comparison"], index=2, key="wing_type")
     if wing_type != "Comparison" and wing_type not in mods_available:
         st.error(f"Wing type '{wing_type}' is not available for aircraft model {aircraft_model}. Available options: {mods_available}")
         st.stop()
@@ -279,7 +400,9 @@ with st.sidebar:
     takeoff_flap = 1 if flap_option == "Flaps 15" else 0
 
     # Winds and temps source
-    winds_temps_source = st.radio("Winds and Temps Aloft Source", ["Current Conditions", "Summer Average", "Winter Average"], index=0)
+    winds_temps_source = st.radio("Winds and Temps Aloft Source", 
+                                ["No Wind", "Current Conditions", "Summer Average", "Winter Average"], 
+                                index=0)  # Default to "No Wind"
 
     # ISA deviation
     isa_dev = int(st.number_input("ISA Deviation (C)", value=0.0, step=1.0))
@@ -287,82 +410,95 @@ with st.sidebar:
     # V1 cut simulation
     v1_cut_enabled = st.checkbox("Enable V1 Cut Simulation (Single Engine)", value=False)
 
+    # Output file option
+    write_output_file = st.checkbox("Write Output CSV File", value=True)
+
 # Main content area for outputs
 if st.button("Run Simulation"):
-    # Get airport codes from display names
     try:
         # Get the selected display names
         dep_display_name = departure_airport
         arr_display_name = arrival_airport
         
-        # Get airport info using exact display name match
-        dep_airport_info = airports_df[airports_df["display_name"] == dep_display_name]
-        arr_airport_info = airports_df[airports_df["display_name"] == arr_display_name]
+        # Get the airport info using case-insensitive matching
+        dep_airport_info = next((display_name_to_info[name] for name in display_name_to_info 
+                               if name.upper() == dep_display_name.upper()), None)
+        arr_airport_info = next((display_name_to_info[name] for name in display_name_to_info 
+                               if name.upper() == arr_display_name.upper()), None)
         
-        if dep_airport_info.empty:
-            st.error(f"Departure airport '{dep_display_name}' not found in database")
-            st.stop()
-        if arr_airport_info.empty:
-            st.error(f"Arrival airport '{arr_display_name}' not found in database")
+        if dep_airport_info is None:
+            similar = [name for name in display_name_to_info 
+                     if dep_display_name.upper() in name.upper()][:5]
+            st.error(f"Departure airport '{dep_display_name}' not found. Similar: {similar}")
             st.stop()
             
-        # Get the airport codes from the filtered DataFrames
-        dep_airport_code = dep_airport_info["ident"].iloc[0]
-        arr_airport_code = arr_airport_info["ident"].iloc[0]
-        
-        # Get airport info again using codes
-        dep_info = airports_df[airports_df["ident"] == dep_airport_code]
-        arr_info = airports_df[airports_df["ident"] == arr_airport_code]
-        
-        if dep_info.empty or arr_info.empty:
-            st.error("Invalid airport code(s). Please check selection.")
+        if arr_airport_info is None:
+            similar = [name for name in display_name_to_info 
+                     if arr_display_name.upper() in name.upper()][:5]
+            st.error(f"Arrival airport '{arr_display_name}' not found. Similar: {similar}")
             st.stop()
-
+        
+        # Get the airport codes
+        dep_airport_code = dep_airport_info["ident"]
+        arr_airport_code = arr_airport_info["ident"]
+        
         # Get coordinates and elevation
-        dep_lat, dep_lon, elev_dep = dep_info.iloc[0][["latitude_deg", "longitude_deg", "elevation_ft"]]
-        arr_lat, arr_lon, elev_arr = arr_info.iloc[0][["latitude_deg", "longitude_deg", "elevation_ft"]]
+        dep_lat, dep_lon, elev_dep = dep_airport_info[["latitude_deg", "longitude_deg", "elevation_ft"]]
+        arr_lat, arr_lon, elev_arr = arr_airport_info[["latitude_deg", "longitude_deg", "elevation_ft"]]
         
         # Calculate distance and bearing
         distance_nm, bearing_deg = haversine_with_bearing(dep_lat, dep_lon, arr_lat, arr_lon)
 
         # Display airport info
         st.header("Airport Information")
-        
-        # Create a custom CSS style for compact display
-        compact_style = """
-        <style>
-        .compact-metric {
-            font-size: 0.85rem;
-            line-height: 1.2;
-            margin-bottom: 0.5rem;
-        }
-        </style>
-        """
-        st.markdown(compact_style, unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("""
-            <div class="compact-metric">
-                <div>Departure Elevation: {elev_dep:,} ft</div>
-                <div>Arrival Elevation: {elev_arr:,} ft</div>
-            </div>
-            """.format(elev_dep=elev_dep, elev_arr=elev_arr), unsafe_allow_html=True)
-            
-            st.markdown("""
-            <div class="compact-metric">
-                <div>Distance: {distance_nm:.1f} NM</div>
-                <div>Bearing: {bearing_deg:.1f}°</div>
-            </div>
-            """.format(distance_nm=distance_nm, bearing_deg=bearing_deg), unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown("""
-            <div class="compact-metric">
-                <div>Departure DA: {da_dep:,} ft</div>
-                <div>Arrival DA: {da_arr:,} ft</div>
-            </div>
-            """.format(da_dep=elev_dep + (120 * isa_dev), da_arr=elev_arr + (120 * isa_dev)), unsafe_allow_html=True)
+
+        # ISA-based: PA = Elevation; DA = PA + 120 * ISA deviation (C)
+        pa_dep = elev_dep
+        pa_arr = elev_arr
+        da_dep = pa_dep + 120 * isa_dev
+        da_arr = pa_arr + 120 * isa_dev
+
+        # Build compact, pre-formatted table to avoid header wrapping
+        def short_name(n: str) -> str:
+            s = str(n).title()
+            s = (s.replace("International", "Intl")
+                   .replace("Municipal", "Muni")
+                   .replace("Regional", "Rgnl")
+                   .replace("County", "Cnty")
+                   .replace("Airport", "Arpt"))
+            return (s[:28] + "…") if len(s) > 29 else s
+
+        airport_rows = [
+            {
+                "Airport": short_name(dep_airport_info["name"]),
+                "ICAO": dep_airport_code,
+                "PA (ft)": f"{int(round(pa_dep)):,}",
+                "DA (ft)": f"{int(round(da_dep)):,}",
+            },
+            {
+                "Airport": short_name(arr_airport_info["name"]),
+                "ICAO": arr_airport_code,
+                "PA (ft)": f"{int(round(pa_arr)):,}",
+                "DA (ft)": f"{int(round(da_arr)):,}",
+            },
+        ]
+
+        airport_df = pd.DataFrame(
+            airport_rows,
+            columns=[
+                "Airport",
+                "ICAO",
+                "PA (ft)",
+                "DA (ft)",
+            ],
+        )
+        # Use row labels for Type, and render a static, compact table
+        airport_df.index = ["Departure", "Arrival"]
+        airport_df.index.name = "Type"
+
+        st.table(airport_df)
+
+        st.markdown(f"Distance: {distance_nm:.1f} NM | Bearing: {bearing_deg:.1f}°")
 
     except Exception as e:
         st.error(f"Error calculating route: {str(e)}")
@@ -393,74 +529,53 @@ if st.button("Run Simulation"):
         tow_f = rw_f - taxi_fuel_f  # Takeoff Weight (after taxiing)
         mission_fuel_f = fuel_input_f - reserve_fuel_f - taxi_fuel_f
         
-        # Tamarack weights
-        zfw_t = bow_t + payload_input_t  # Zero Fuel Weight
-        rw_t = zfw_t + fuel_input_t  # Ramp Weight
-        tow_t = rw_t - taxi_fuel_t  # Takeoff Weight (after taxiing)
-        mission_fuel_t = fuel_input_t - reserve_fuel_t - taxi_fuel_t
-    elif wing_type == "Flatwing":
-        zfw_f = bow_f + payload_input_f  # Zero Fuel Weight
-        rw_f = zfw_f + fuel_input_f  # Ramp Weight
-        tow_f = rw_f - taxi_fuel_f  # Takeoff Weight (after taxiing)
-        mission_fuel_f = fuel_input_f - reserve_fuel_f - taxi_fuel_f
-        
-        # Set Tamarack weights to 0 for comparison
-        zfw_t = 0
-        rw_t = 0
-        tow_t = 0
-        mission_fuel_t = 0
-    else:  # Tamarack
-        # Set Flatwing weights to 0 for comparison
-        zfw_f = 0
-        rw_f = 0
-        tow_f = 0
-        mission_fuel_f = 0
-        
-        zfw_t = bow_t + payload_input_t  # Zero Fuel Weight
-        rw_t = zfw_t + fuel_input_t  # Ramp Weight
-        tow_t = rw_t - taxi_fuel_t  # Takeoff Weight (after taxiing)
-        mission_fuel_t = fuel_input_t - reserve_fuel_t - taxi_fuel_t
-
-    # Get configurations based on wing type
-    if wing_type == "Comparison":
-        # Get Flatwing configuration
-        flatwing_config = AIRCRAFT_CONFIG.get((aircraft_model, "Flatwing"))
-        if not flatwing_config:
-            st.error(f"No Flatwing configuration found for {aircraft_model}")
-            st.stop()
-        
-        # Get Tamarack configuration
+        # Tamarack weights - Always use values from config file
         tamarack_config = AIRCRAFT_CONFIG.get((aircraft_model, "Tamarack"))
-        if not tamarack_config:
-            st.error(f"No Tamarack configuration found for {aircraft_model}")
-            st.stop()
+        if tamarack_config:
+            tamarack_mzfw = tamarack_config[19]  # MZFW is at index 19 in the config tuple
+            tamarack_bow = tamarack_config[18]   # BOW is at index 18
+            
+            # Ensure payload doesn't exceed MZFW - BOW
+            max_payload_t = max(0, tamarack_mzfw - tamarack_bow)
+            if payload_input_t > max_payload_t:
+                payload_input_t = max_payload_t
+                # Instead of modifying session state directly, we'll use the adjusted value
+                # and let the widget update on the next render
+                
+            zfw_t = tamarack_bow + payload_input_t  # Zero Fuel Weight
+            rw_t = zfw_t + fuel_input_t  # Ramp Weight
+            tow_t = rw_t - taxi_fuel_t  # Takeoff Weight (after taxiing)
+            mission_fuel_t = fuel_input_t - reserve_fuel_t - taxi_fuel_t
+        else:
+            # Fallback to Flatwing calculation if Tamarack config not found (shouldn't happen)
+            st.error("Tamarack configuration not found!")
+            zfw_t = 0
+            rw_t = 0
+            tow_t = 0
+            mission_fuel_t = 0
 
-        # Create weight status dataframe for Flatwing
-        try:
-            s_f, b_f, e_f, h_f, sweep_25c_f, sfc_f, engines_orig_f, thrust_mult_f, ceiling_f, CL0_f, CLA_f, cdo_f, dcdo_flap1_f, dcdo_flap2_f, \
-                dcdo_flap3_f, dcdo_gear_f, mu_to_f, mu_lnd_f, bow_f, mzfw_f, mrw_f, mtow_f, max_fuel_f, \
-                taxi_fuel_default_f, reserve_fuel_default_f, mmo_f, VMO_f, clmax_f, clmax_1_f, clmax_2_f, m_climb_f, \
-                v_climb_f, roc_min_f, m_descent_f, v_descent_f = flatwing_config
-            max_payload_f = mzfw_f - bow_f
-        except ValueError as e:
-            st.error(f"Error extracting Flatwing configuration values: {str(e)}")
-            st.stop()
+        # Display weight status tables for Comparison mode
+        st.markdown("---")
+        st.subheader('Weight Status')
 
-        # Create weight status dataframe for Tamarack
-        try:
-            s_t, b_t, e_t, h_t, sweep_25c_t, sfc_t, engines_orig_t, thrust_mult_t, ceiling_t, CL0_t, CLA_t, cdo_t, dcdo_flap1_t, dcdo_flap2_t, \
-                dcdo_flap3_t, dcdo_gear_t, mu_to_t, mu_lnd_t, bow_t, mzfw_t, mrw_t, mtow_t, max_fuel_t, \
-                taxi_fuel_default_t, reserve_fuel_default_t, mmo_t, VMO_t, clmax_t, clmax_1_t, clmax_2_t, m_climb_t, \
-                v_climb_t, roc_min_t, m_descent_t, v_descent_t = tamarack_config
-            max_payload_t = mzfw_t - bow_t
-        except ValueError as e:
-            st.error(f"Error extracting Tamarack configuration values: {str(e)}")
-            st.stop()
+        # Highlighter for exceeded limits (shared)
+        def highlight_exceeded(row):
+            weight = float(row['Weight (lb)'].replace(',', ''))
+            max_weight = row['Max Weight (lb)']
+            if max_weight and str(max_weight).strip():
+                try:
+                    max_weight_val = float(str(max_weight).replace(',', ''))
+                    if weight > max_weight_val:
+                        return ['background-color: #ffcccc'] * len(row)
+                except (ValueError, AttributeError):
+                    pass
+            return [''] * len(row)
 
-        # Create weight status dataframe for Flatwing
-        weight_df = pd.DataFrame({
+        # Flatwing table
+        max_payload_flatwing = max(0, flatwing_mzfw - bow_f)
+        weight_df_f = pd.DataFrame({
             'Component': [
-                'BOW', 'Payload', 'Initial Fuel', 'Reserve Fuel', 'Taxi Fuel', 
+                'BOW', 'Payload', 'Initial Fuel', 'Reserve Fuel', 'Taxi Fuel',
                 'Mission Fuel', 'ZFW', 'Ramp Weight', 'Takeoff Weight'
             ],
             'Weight (lb)': [
@@ -476,133 +591,135 @@ if st.button("Run Simulation"):
             ],
             'Max Weight (lb)': [
                 "",  # BOW - no max
-                f"{max_payload_f:,.0f}",  # Payload has max
-                f"{max_fuel_f:,.0f}",  # Initial Fuel has max
+                f"{max_payload_flatwing:,.0f}",  # Payload has max
+                f"{max_fuel:,.0f}",  # Initial Fuel has max (Flatwing config)
                 "",  # Reserve Fuel - no max
                 "",  # Taxi Fuel - no max
                 "",  # Mission Fuel - no max
-                f"{mzfw_f:,.0f}",  # ZFW has max
-                f"{mrw_f:,.0f}",  # Ramp Weight has max
-                f"{mtow_f:,.0f}"  # Takeoff Weight has max
+                f"{flatwing_mzfw:,.0f}",  # ZFW has max (Flatwing)
+                f"{mrw:,.0f}",  # Ramp Weight has max (Flatwing)
+                f"{mtow:,.0f}"  # Takeoff Weight has max (Flatwing)
             ]
         })
+        styled_df_f = weight_df_f.style.apply(highlight_exceeded, axis=1)
 
-        # Create weight status dataframe for Tamarack
-        weight_df_tamarack = pd.DataFrame({
-            'Component': [
-                'BOW', 'Payload', 'Initial Fuel', 'Reserve Fuel', 'Taxi Fuel', 
-                'Mission Fuel', 'ZFW', 'Ramp Weight', 'Takeoff Weight'
-            ],
-            'Weight (lb)': [
-                f"{bow_t:,.0f}",
-                f"{payload_input_t:,.0f}",
-                f"{fuel_input_t:,.0f}",
-                f"{reserve_fuel_t:,.0f}",
-                f"{taxi_fuel_t:,.0f}",
-                f"{mission_fuel_t:,.0f}",
-                f"{zfw_t:,.0f}",
-                f"{rw_t:,.0f}",
-                f"{tow_t:,.0f}"
-            ],
-            'Max Weight (lb)': [
-                "",  # BOW - no max
-                f"{max_payload_t:,.0f}",  # Payload has max
-                f"{max_fuel_t:,.0f}",  # Initial Fuel has max
-                "",  # Reserve Fuel - no max
-                "",  # Taxi Fuel - no max
-                "",  # Mission Fuel - no max
-                f"{mzfw_t:,.0f}",  # ZFW has max
-                f"{mrw_t:,.0f}",  # Ramp Weight has max
-                f"{mtow_t:,.0f}"  # Takeoff Weight has max
-            ]
-        })
+        # Tamarack table
+        if tamarack_config:
+            tamarack_mrw = tamarack_config[20]
+            tamarack_mtow = tamarack_config[21]
+            tamarack_max_fuel = tamarack_config[22]
+            max_payload_tamarack = max(0, tamarack_mzfw - tamarack_bow)
 
-        # Display weight status tables before simulation
-        st.markdown("---")
-        st.subheader('Weight Status')
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Flatwing Weight Status")
-            def highlight_exceeded(row):
+            weight_df_t = pd.DataFrame({
+                'Component': [
+                    'BOW', 'Payload', 'Initial Fuel', 'Reserve Fuel', 'Taxi Fuel',
+                    'Mission Fuel', 'ZFW', 'Ramp Weight', 'Takeoff Weight'
+                ],
+                'Weight (lb)': [
+                    f"{tamarack_bow:,.0f}",
+                    f"{payload_input_t:,.0f}",
+                    f"{fuel_input_t:,.0f}",
+                    f"{reserve_fuel_t:,.0f}",
+                    f"{taxi_fuel_t:,.0f}",
+                    f"{mission_fuel_t:,.0f}",
+                    f"{zfw_t:,.0f}",
+                    f"{rw_t:,.0f}",
+                    f"{tow_t:,.0f}"
+                ],
+                'Max Weight (lb)': [
+                    "",  # BOW - no max
+                    f"{max_payload_tamarack:,.0f}",  # Payload has max
+                    f"{tamarack_max_fuel:,.0f}",  # Initial Fuel has max (Tamarack config)
+                    "",  # Reserve Fuel - no max
+                    "",  # Taxi Fuel - no max
+                    "",  # Mission Fuel - no max
+                    f"{tamarack_mzfw:,.0f}",  # ZFW has max (Tamarack)
+                    f"{tamarack_mrw:,.0f}",  # Ramp Weight has max (Tamarack)
+                    f"{tamarack_mtow:,.0f}"  # Takeoff Weight has max (Tamarack)
+                ]
+            })
+            styled_df_t = weight_df_t.style.apply(highlight_exceeded, axis=1)
+        else:
+            weight_df_t = pd.DataFrame()
+            styled_df_t = weight_df_t
+
+        # Show side-by-side tables
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Flatwing**")
+            st.table(styled_df_f)
+        with col_b:
+            if not weight_df_t.empty:
+                st.markdown("**Tamarack**")
+                st.table(styled_df_t)
+
+        # Exceeded checks for both
+        def is_weight_exceeded(row):
+            try:
                 weight = float(row['Weight (lb)'].replace(',', ''))
                 max_weight = row['Max Weight (lb)']
-                if max_weight and max_weight.strip():  # Only compare if max_weight is not empty
-                    try:
-                        max_weight_val = float(max_weight.replace(',', ''))
-                        if weight > max_weight_val:
-                            return ['background-color: #ffcccc'] * len(row)
-                    except (ValueError, AttributeError):
-                        pass
-                return [''] * len(row)
+                if max_weight and str(max_weight).strip():
+                    max_weight_val = float(str(max_weight).replace(',', ''))
+                    return weight > max_weight_val
+                return False
+            except (ValueError, AttributeError):
+                return False
 
-            styled_df = weight_df.style.apply(highlight_exceeded, axis=1)
-            st.table(styled_df)
-            
-            # Check for any exceeded weight limits
-            def is_weight_exceeded(row):
-                try:
-                    weight = float(row['Weight (lb)'].replace(',', ''))
-                    max_weight = row['Max Weight (lb)']
-                    if max_weight and max_weight.strip():
-                        max_weight_val = float(max_weight.replace(',', ''))
-                        return weight > max_weight_val
-                    return False
-                except (ValueError, AttributeError):
-                    return False
-            
-            weight_exceeded = weight_df.apply(is_weight_exceeded, axis=1).any()
-            
-            if weight_exceeded:
-                st.error("Weight limits exceeded! Please adjust the following:")
-                for _, row in weight_df.iterrows():
-                    weight = float(row['Weight (lb)'].replace(',', ''))
-                    max_weight = float(row['Max Weight (lb)'].replace(',', ''))
-                    if weight > max_weight:
+        exceeded_f = weight_df_f.apply(is_weight_exceeded, axis=1).any()
+        exceeded_t = weight_df_t.apply(is_weight_exceeded, axis=1).any() if not weight_df_t.empty else False
+
+        if exceeded_f or exceeded_t:
+            st.error("Weight limits exceeded! Please adjust the following:")
+            if exceeded_f:
+                for _, row in weight_df_f.iterrows():
+                    try:
+                        weight = float(row['Weight (lb)'].replace(',', ''))
+                        max_weight = float(row['Max Weight (lb)'].replace(',', '')) if row['Max Weight (lb)'] else None
+                    except (ValueError, AttributeError):
+                        max_weight = None
+                    if max_weight is not None and weight > max_weight:
                         excess_amount = weight - max_weight
-                        st.error(f"- {row['Component']}: Current {row['Weight (lb)']} lbs exceeds max {row['Max Weight (lb)']} lbs by {excess_amount:,.0f} lbs")
-                st.stop()
+                        st.error(f"- Flatwing {row['Component']}: Current {row['Weight (lb)']} lbs exceeds max {row['Max Weight (lb)']} lbs by {excess_amount:,.0f} lbs")
+            if exceeded_t:
+                for _, row in weight_df_t.iterrows():
+                    try:
+                        weight = float(row['Weight (lb)'].replace(',', ''))
+                        max_weight = float(row['Max Weight (lb)'].replace(',', '')) if row['Max Weight (lb)'] else None
+                    except (ValueError, AttributeError):
+                        max_weight = None
+                    if max_weight is not None and weight > max_weight:
+                        excess_amount = weight - max_weight
+                        st.error(f"- Tamarack {row['Component']}: Current {row['Weight (lb)']} lbs exceeds max {row['Max Weight (lb)']} lbs by {excess_amount:,.0f} lbs")
+            st.stop()
+    elif wing_type == "Tamarack":
+        # Set Flatwing weights to 0 for comparison
+        zfw_f = 0
+        rw_f = 0
+        tow_f = 0
+        mission_fuel_f = 0
         
-        with col2:
-            st.subheader("Tamarack Weight Status")
-            def highlight_exceeded(row):
-                weight = float(row['Weight (lb)'].replace(',', ''))
-                max_weight = row['Max Weight (lb)']
-                if max_weight and max_weight.strip():  # Only compare if max_weight is not empty
-                    try:
-                        max_weight_val = float(max_weight.replace(',', ''))
-                        if weight > max_weight_val:
-                            return ['background-color: #ffcccc'] * len(row)
-                    except (ValueError, AttributeError):
-                        pass
-                return [''] * len(row)
-
-            styled_df_tamarack = weight_df_tamarack.style.apply(highlight_exceeded, axis=1)
-            st.table(styled_df_tamarack)
+        tamarack_config = AIRCRAFT_CONFIG.get((aircraft_model, "Tamarack"))
+        if tamarack_config:
+            tamarack_mzfw = tamarack_config[19]  # MZFW is at index 19 in the config tuple
+            tamarack_bow = tamarack_config[18]   # BOW is at index 18
             
-            # Check for any exceeded weight limits
-            def is_weight_exceeded(row):
-                try:
-                    weight = float(row['Weight (lb)'].replace(',', ''))
-                    max_weight = row['Max Weight (lb)']
-                    if max_weight and max_weight.strip():
-                        max_weight_val = float(max_weight.replace(',', ''))
-                        return weight > max_weight_val
-                    return False
-                except (ValueError, AttributeError):
-                    return False
-            
-            weight_exceeded_t = weight_df_tamarack.apply(is_weight_exceeded, axis=1).any()
-            
-            if weight_exceeded_t:
-                st.error("Weight limits exceeded! Please adjust the following:")
-                for _, row in weight_df_tamarack.iterrows():
-                    weight = float(row['Weight (lb)'].replace(',', ''))
-                    max_weight = float(row['Max Weight (lb)'].replace(',', ''))
-                    if weight > max_weight:
-                        excess_amount = weight - max_weight
-                        st.error(f"- {row['Component']}: Current {row['Weight (lb)']} lbs exceeds max {row['Max Weight (lb)']} lbs by {excess_amount:,.0f} lbs")
-                st.stop()
+            # Ensure payload doesn't exceed MZFW - BOW
+            max_payload_t = max(0, tamarack_mzfw - tamarack_bow)
+            if payload_input_t > max_payload_t:
+                payload_input_t = max_payload_t
+                # Instead of modifying session state directly, we'll use the adjusted value
+                # and let the widget update on the next render
+                
+            zfw_t = tamarack_bow + payload_input_t  # Zero Fuel Weight
+            rw_t = zfw_t + fuel_input_t  # Ramp Weight
+            tow_t = rw_t - taxi_fuel_t  # Takeoff Weight (after taxiing)
+            mission_fuel_t = fuel_input_t - reserve_fuel_t - taxi_fuel_t
+        else:
+            st.error("Tamarack configuration not found!")
+            zfw_t = 0
+            rw_t = 0
+            tow_t = 0
+            mission_fuel_t = 0
     else:
         # For single configuration mode
         config = AIRCRAFT_CONFIG.get((aircraft_model, wing_type))
@@ -611,10 +728,13 @@ if st.button("Run Simulation"):
             st.stop()
         
         try:
+            # Unpack the first 35 values from the config tuple
+            config_values = list(config)[:35]
             s, b, e, h, sweep_25c, sfc, engines_orig, thrust_mult, ceiling, CL0, CLA, cdo, dcdo_flap1, dcdo_flap2, \
                 dcdo_flap3, dcdo_gear, mu_to, mu_lnd, bow, mzfw, mrw, mtow, max_fuel, \
                 taxi_fuel_default, reserve_fuel_default, mmo, VMO, clmax, clmax_1, clmax_2, m_climb, \
-                v_climb, roc_min, m_descent, v_descent = config
+                v_climb, roc_min, m_descent, v_descent = config_values
+            
             max_payload = mzfw - bow
         except ValueError as e:
             st.error(f"Error extracting configuration values: {str(e)}")
@@ -720,41 +840,25 @@ if st.button("Run Simulation"):
 
     if wing_type == "Comparison":
         if "Tamarack" in mods_available:
-            tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon = run_simulation(
+            tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
                 dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
                 payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-                winds_temps_source, v1_cut_enabled)
-            print(f"\n=== DEBUG: Tamarack Results from run_simulation ===")
-            print(f"Tamarack Results keys: {list(tamarack_results.keys())}")
-            print(f"Tamarack Takeoff V-Speeds: {tamarack_results.get('Takeoff V-Speeds')}")
-            print(f"Tamarack Approach V-Speeds: {tamarack_results.get('Approach V-Speeds')}")
+                winds_temps_source, v1_cut_enabled, write_output_file)
         if "Flatwing" in mods_available:
-            flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon = run_simulation(
+            flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
                 dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
                 payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-                winds_temps_source, v1_cut_enabled)
-            print(f"\n=== DEBUG: Flatwing Results from run_simulation ===")
-            print(f"Flatwing Results keys: {list(flatwing_results.keys())}")
-            print(f"Flatwing Takeoff V-Speeds: {flatwing_results.get('Takeoff V-Speeds')}")
-            print(f"Flatwing Approach V-Speeds: {flatwing_results.get('Approach V-Speeds')}")
+                winds_temps_source, v1_cut_enabled, write_output_file)
     elif wing_type == "Tamarack":
-        tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon = run_simulation(
+        tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
             dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
             payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-            winds_temps_source, v1_cut_enabled)
-        print(f"\n=== DEBUG: Tamarack Results from run_simulation ===")
-        print(f"Tamarack Results keys: {list(tamarack_results.keys())}")
-        print(f"Tamarack Takeoff V-Speeds: {tamarack_results.get('Takeoff V-Speeds')}")
-        print(f"Tamarack Approach V-Speeds: {tamarack_results.get('Approach V-Speeds')}")
+            winds_temps_source, v1_cut_enabled, write_output_file)
     elif wing_type == "Flatwing":
-        flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon = run_simulation(
+        flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
             dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
             payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-            winds_temps_source, v1_cut_enabled)
-        print(f"\n=== DEBUG: Flatwing Results from run_simulation ===")
-        print(f"Flatwing Results keys: {list(flatwing_results.keys())}")
-        print(f"Flatwing Takeoff V-Speeds: {flatwing_results.get('Takeoff V-Speeds')}")
-        print(f"Flatwing Approach V-Speeds: {flatwing_results.get('Approach V-Speeds')}")
+            winds_temps_source, v1_cut_enabled, write_output_file)
 
     if v1_cut_enabled:
         if not tamarack_data.empty:
@@ -779,3 +883,29 @@ if st.button("Run Simulation"):
         arr_airport_code,
         fuel_f if wing_type == "Flatwing" else fuel_t
     )
+    
+    # Display output file information
+    st.markdown("---")
+    st.subheader('Output Files')
+    
+    output_files = []
+    
+    if wing_type == "Comparison":
+        if "Tamarack" in mods_available and 'tamarack_output_file' in locals():
+            output_files.append((f"{aircraft_model} Tamarack", tamarack_output_file))
+        if "Flatwing" in mods_available and 'flatwing_output_file' in locals():
+            output_files.append((f"{aircraft_model} Flatwing", flatwing_output_file))
+    elif wing_type == "Tamarack" and 'tamarack_output_file' in locals():
+        output_files.append((f"{aircraft_model} Tamarack", tamarack_output_file))
+    elif wing_type == "Flatwing" and 'flatwing_output_file' in locals():
+        output_files.append((f"{aircraft_model} Flatwing", flatwing_output_file))
+    
+    if output_files:
+        st.write("**Time history data files have been created:**")
+        for config_name, filepath in output_files:
+            st.success(f" {config_name}: `{filepath}`")
+            
+        # Show directory information
+        output_dir = os.path.dirname(output_files[0][1]) if output_files else "output"
+        st.info(f" All files saved in: `{output_dir}`")
+        st.write("*Files contain simulation parameters sampled every 5 seconds*")
