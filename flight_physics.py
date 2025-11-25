@@ -142,9 +142,60 @@ def vspeeds(w, s, clmax, clmax_1, clmax_2, delta, m, flap, segment):
 
 
 def physics(t_inc, gamma, sigma, delta, w, m, c, vkias, roc_fpm, roc_goal, speed_goal, thrust_factor, engines, d_alt,
-            thrust_mult, cdo, dcdo_flap1, dcdo_flap2, dcdo_flap3, dcdo_gear, k, s, segment, mu_lnd, mu_to, climb_trigger, p, mmo, v_true_fps):
+            thrust_mult, cdo, dcdo_flap1, dcdo_flap2, dcdo_flap3, dcdo_gear, k, s, segment, mu_lnd, mu_to, climb_trigger, p, mmo, v_true_fps, turboprop=None):
     drag_factor = 1
-    thrust = thrust_calc(d_alt, m, thrust_mult, engines, thrust_factor, segment)
+    # Turboprop thrust path: compute thrust from shaft power and prop efficiency if params provided
+    if turboprop is not None:
+        # Constants and parameters
+        rho0 = 0.0023769  # slug/ft^3
+        rho = sigma * rho0
+        D = turboprop.get('prop_diameter_ft', 10.8)
+        rpm = turboprop.get('prop_rpm', 1900.0)
+        n = rpm / 60.0  # rev/s
+        P_rated = turboprop.get('P_rated_shp', 675.0) * engines  # shp
+        alpha = turboprop.get('alpha_lapse', 0.6)
+        C_T0 = turboprop.get('C_T0', 0.10)
+        J_curve = turboprop.get('eta_curve_J', [0.0, 0.4, 0.8, 1.0, 1.2, 1.4])
+        eta_curve = turboprop.get('eta_curve_eta', [0.00, 0.70, 0.83, 0.86, 0.82, 0.70])
+
+        # Interpolate efficiency eta(J)
+        def lerp(x0, y0, x1, y1, x):
+            if x1 == x0:
+                return y0
+            t = max(0.0, min(1.0, (x - x0) / (x1 - x0)))
+            return y0 + t * (y1 - y0)
+
+        def eta_of_J(J):
+            if J <= J_curve[0]:
+                return eta_curve[0]
+            for i in range(1, len(J_curve)):
+                if J <= J_curve[i]:
+                    return lerp(J_curve[i-1], eta_curve[i-1], J_curve[i], eta_curve[i], J)
+            return eta_curve[-1]
+
+        V = max(0.0, v_true_fps)
+        J = V / (n * D) if n * D > 1e-6 else 0.0
+        eta = eta_of_J(J)
+
+        # Available power with simple density lapse and throttle mapping
+        P_avail_shp = P_rated * (sigma ** alpha) * max(0.0, min(1.0, thrust_factor))
+
+        # Thrust from power, blend with static thrust at very low speeds
+        T_power = (eta * P_avail_shp * 550.0) / max(V, 1e-3)  # 1 shp = 550 ft*lbf/s
+        T_static = C_T0 * rho * (n ** 2) * (D ** 4)
+        # Blend region between 10 and 80 ft/s
+        V_lo, V_hi = 10.0, 80.0
+        if V <= V_lo:
+            thrust = T_static
+        elif V >= V_hi:
+            thrust = T_power
+        else:
+            w_blend = (V - V_lo) / (V_hi - V_lo)
+            thrust = (1 - w_blend) * T_static + w_blend * T_power
+        if thrust < 100:
+            thrust = 100
+    else:
+        thrust = thrust_calc(d_alt, m, thrust_mult, engines, thrust_factor, segment)
 
     if p == 0:
         m = 0

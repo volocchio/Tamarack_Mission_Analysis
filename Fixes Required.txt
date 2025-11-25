@@ -1,0 +1,4 @@
+- the TAS in the UI output is high as compared to the simulation.  it seems that the average cruise speed is calculated in corectlty.  in the UI output sectio of cruise, add he highest achieved Mach during the cruise segment.
+- we need a nice airport table at the top of UI output.  it is not very clean.  provide the pressure altitude and density altitude of the airports and make the table nice.
+- we need a nice PDF output of the results if the user wants it.
+- 

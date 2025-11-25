@@ -19,10 +19,16 @@ def load_airports():
         df = df.dropna(subset=["latitude_deg", "longitude_deg"])
         df["elevation_ft"] = df["elevation_ft"].fillna(0)
         
-        # Create a display name that includes city and airport name
+        # Normalize all text fields to uppercase for consistent matching
+        text_columns = ['ident', 'type', 'name', 'municipality', 'iso_country', 'iso_region', 'gps_code', 'iata_code', 'local_code']
+        for col in text_columns:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.upper()
+        
+        # Create display name with normalized text
         df["display_name"] = df.apply(
             lambda row: f"{row['ident']} - {row['name']} ({row['municipality']})" 
-            if pd.notna(row['municipality']) 
+            if pd.notna(row['municipality']) and str(row['municipality']).upper() != 'NAN' 
             else f"{row['ident']} - {row['name']}",
             axis=1
         )
