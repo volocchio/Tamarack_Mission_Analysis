@@ -345,6 +345,7 @@ def run_simulation(
     cruise_kias: float | None = None,
     isa_dev_c: float | None = None,
     range_mode: bool = False,
+    cruise_mode: str | None = None,
 ):
     """Simulate a flight between two airports.
     
@@ -366,6 +367,7 @@ def run_simulation(
         cruise_kias: Optional cruise KIAS override (not used).
         isa_dev_c: Optional ISA temperature deviation in Celsius.
         range_mode: Optional range mode (not used).
+        cruise_mode: Optional cruise mode (not used).
 
     Returns:
         tuple: (flight_data, results, dep_lat, dep_lon, arr_lat, arr_lon, output_file_path)
@@ -740,7 +742,9 @@ def run_simulation(
             try:
                 # Calculate V-speeds based on current segment
                 if segment == 0:  # Takeoff
-                    vr, v1, v2, v3, _, _ = vspeeds(w, s, clmax, clmax_1, clmax_2, delta, m, flap, segment)
+                    vr, v1, v2, v3, _, _ = vspeeds(
+                        w, s, clmax, clmax_1, clmax_2, delta, m, flap, segment
+                    )
                     
                     takeoff_vspeeds = {
                         "Weight": int(w),
@@ -754,7 +758,9 @@ def run_simulation(
                 elif segment == 12:  # Approach
                     # Set landing flap setting for approach
                     approach_flap = 2  # Assuming 2 is the landing flap setting
-                    _, _, _, _, vapp, vref = vspeeds(w, s, clmax, clmax_1, clmax_2, delta, m, approach_flap, 12)
+                    _, _, _, _, vapp, vref = vspeeds(
+                        w, s, clmax, clmax_1, clmax_2, delta, m, approach_flap, 12
+                    )
                     
                     approach_vspeeds = {
                         "Weight": int(w),
@@ -803,6 +809,52 @@ def run_simulation(
         else:
             t_inc = 1
 
+        # Optionally compute optimal cruise Mach for range/endurance objectives (above 10k) using EAS as the variable
+        m_opt_override = None
+        try:
+            if cruise_mode in ("Max Range", "Max Endurance") and alt > 10100:
+                # Local atmosphere ratios
+                _dalt_pre, _, sigma_pre, delta_pre, _, _ = atmos(alt, isa_diff)
+                rho0 = 0.0023769  # slug/ft^3 (sea level)
+                a0 = 1116.45      # ft/s (sea level speed of sound)
+                theta = (delta_pre / sigma_pre) if sigma_pre > 0 else 1.0  # T/T0
+                a_local = a0 * np.sqrt(max(0.1, float(theta)))
+                rho = float(max(1e-6, sigma_pre)) * rho0
+
+                # Stall speed in EAS (sea-level dynamic pressure definition)
+                vs_eas = np.sqrt(max(1e-9, 2.0 * w / (rho0 * s * max(1e-6, clmax))))
+                v_eas_min = 1.2 * vs_eas
+                # Upper bound from MMO converted to EAS: Veas = Vtrue * sqrt(sigma)
+                v_true_max = float(mmo) * a_local * 0.99
+                v_eas_max = v_true_max * np.sqrt(max(1e-6, sigma_pre))
+                if v_eas_max < v_eas_min + 5.0:
+                    v_eas_max = v_eas_min + 5.0
+
+                # Objective over EAS grid; convert to true airspeed to compute CL
+                def objective_veas(veas_fps: float) -> float:
+                    ve = max(v_eas_min, min(veas_fps, v_eas_max))
+                    v_true = ve / np.sqrt(max(1e-6, sigma_pre))
+                    cl = 2.0 * w / (rho * v_true * v_true * s)
+                    cd = cdo + k * cl * cl
+                    if cd <= 0 or cl <= 0:
+                        return -1e9
+                    is_turboprop = (aircraft in TURBOPROP_PARAMS) if isinstance(TURBOPROP_PARAMS, dict) else False
+                    if not is_turboprop:
+                        # Jet: Range ~ sqrt(CL)/CD; Endurance ~ CL/CD
+                        return (np.sqrt(cl) / cd) if cruise_mode == "Max Range" else (cl / cd)
+                    else:
+                        # Turboprop: Range ~ CL/CD; Endurance ~ CL^(3/2)/CD
+                        return (cl / cd) if cruise_mode == "Max Range" else (cl ** 1.5 / cd)
+
+                vg = np.linspace(v_eas_min, v_eas_max, 36)
+                vals = [objective_veas(vv) for vv in vg]
+                idx = int(np.argmax(vals)) if len(vals) else 0
+                v_eas_best = float(vg[idx]) if len(vg) else v_eas_min
+                v_true_best = v_eas_best / np.sqrt(max(1e-6, sigma_pre))
+                m_opt_override = max(0.2, min(float(mmo), v_true_best / a_local))
+        except Exception:
+            m_opt_override = None
+
         # Set speed and ROC goals based on segment
         speed_goal = 0
         roc_goal = 0
@@ -825,7 +877,13 @@ def run_simulation(
             speed_goal = m_climb
             roc_goal = roc_min
         elif segment in (6, 7):
-            speed_goal = v_u_10k if alt <= 10100 else m_cruise
+            if alt <= 10100:
+                speed_goal = v_u_10k
+            else:
+                # Use optimized Mach if available, otherwise input/default m_cruise
+                if m_opt_override is not None:
+                    m_cruise = float(m_opt_override)
+                speed_goal = m_cruise
             roc_goal = 0
         elif segment == 8:
             if alt <= 10100:

@@ -407,6 +407,14 @@ with st.sidebar:
     # ISA deviation
     isa_dev = int(st.number_input("ISA Deviation (C)", value=0.0, step=1.0))
 
+    # Cruise mode selection
+    cruise_mode = st.radio(
+        "Cruise Mode",
+        ["MCT (Max Thrust)", "Max Range", "Max Endurance"],
+        index=0,
+        help="Above 10,000 ft: set cruise speed by objective. For MCT, hold max thrust. For Max Range/Endurance, target optimal CL/CD with V >= 1.2*Vs."
+    )
+
     # V1 cut simulation
     v1_cut_enabled = st.checkbox("Enable V1 Cut Simulation (Single Engine)", value=False)
 
@@ -843,22 +851,22 @@ if st.button("Run Simulation"):
             tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
                 dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
                 payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-                winds_temps_source, v1_cut_enabled, write_output_file)
+                winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode)
         if "Flatwing" in mods_available:
             flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
                 dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
                 payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-                winds_temps_source, v1_cut_enabled, write_output_file)
+                winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode)
     elif wing_type == "Tamarack":
         tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
             dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
             payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-            winds_temps_source, v1_cut_enabled, write_output_file)
+            winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode)
     elif wing_type == "Flatwing":
         flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
             dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
             payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-            winds_temps_source, v1_cut_enabled, write_output_file)
+            winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode)
 
     if v1_cut_enabled:
         if not tamarack_data.empty:
@@ -881,11 +889,15 @@ if st.button("Run Simulation"):
         dep_lat, dep_lon, arr_lat, arr_lon,
         distance_nm, bearing_deg,
         winds_temps_source,
-        cruise_altitude_f if wing_type == "Flatwing" else cruise_altitude_t,
+        isa_dev,
+        (cruise_altitude_f if wing_type == "Flatwing" else cruise_altitude_t),
         dep_airport_code,
         arr_airport_code,
-        fuel_f if wing_type == "Flatwing" else fuel_t,
-        report_output_dir=report_output_dir
+        (fuel_f if wing_type == "Flatwing" else fuel_t),
+        report_output_dir=report_output_dir,
+        weight_df_flatwing=(weight_df_f if 'weight_df_f' in locals() else None),
+        weight_df_tamarack=(weight_df_t if 'weight_df_t' in locals() else None),
+        weight_df_single=(weight_df if 'weight_df' in locals() else None)
     )
     
     # Display output file information (for all wing types)
