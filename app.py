@@ -412,6 +412,7 @@ with st.sidebar:
         "Cruise Mode",
         ["MCT (Max Thrust)", "Max Range", "Max Endurance"],
         index=0,
+        format_func=lambda x: {"Max Range": "Max Range speed (LRC)", "Max Endurance": "Max Endurance Speed"}.get(x, x),
         help="Above 10,000 ft: set cruise speed by objective. For MCT, hold max thrust. For Max Range/Endurance, target optimal CL/CD with V >= 1.2*Vs."
     )
 
