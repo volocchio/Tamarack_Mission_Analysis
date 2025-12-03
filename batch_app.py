@@ -84,7 +84,7 @@ with st.sidebar:
         if speed_type == "Mach":
             col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
-                mach_start = st.number_input("Mach start", value=0.70, step=0.01, format="%.2f")
+                mach_start = st.number_input("Mach start", value=0.66, step=0.01, format="%.2f")
             with col_m2:
                 mach_end = st.number_input("Mach end", value=0.62, step=0.01, format="%.2f")
             with col_m3:
@@ -122,18 +122,18 @@ with st.sidebar:
             "Max Range vs Mach",
             "Max Endurance vs Mach",
             "Max Range vs Altitude",
-            "Endurance vs Altitude",
+            "Max Endurance vs Altitude",
         ]
-        default_plots = [payload_curve_label, "Max Range vs Mach", "Max Endurance vs Mach", "Max Range vs Altitude", "Endurance vs Altitude"]
+        default_plots = [payload_curve_label, "Max Range vs Mach", "Max Endurance vs Mach", "Max Range vs Altitude", "Max Endurance vs Altitude"]
         plots_key = "plots_mct"
     else:
         # Optimized modes: hide Mach-based plots entirely and only show the relevant altitude plot
         if cruise_mode == "Max Endurance":
             plot_options = [
                 payload_curve_label,
-                "Endurance vs Altitude",
+                "Max Endurance vs Altitude",
             ]
-            default_plots = [payload_curve_label, "Endurance vs Altitude"]
+            default_plots = [payload_curve_label, "Max Endurance vs Altitude"]
             plots_key = "plots_endurance"
         else:
             plot_options = [
@@ -341,7 +341,17 @@ if summary_df is not None and len(summary_df) > 0:
     if payload_curve_label in plot_choices:
         st.subheader("Payload-Endurance Curves" if cruise_mode == "Max Endurance" else "Payload-Range Curves")
         # Select altitude (speed selection optional depending on cruise mode)
-        alt_options = sorted(filtered["cruise_alt"].unique().tolist(), reverse=True)
+        alt_all = sorted(filtered["cruise_alt"].unique().tolist(), reverse=True)
+        # Only allow altitudes that will yield a non-empty payload curve
+        xcol = ("total_time_min" if cruise_mode == "Max Endurance" else "total_dist_nm")
+        def _alt_has_payload_curve_data(a):
+            sub = filtered[filtered["cruise_alt"] == a]
+            if sub.empty:
+                return False
+            xv = pd.to_numeric(sub.get(xcol), errors="coerce").dropna()
+            yv = pd.to_numeric(sub.get("payload"), errors="coerce").dropna()
+            return (len(xv) > 0 and len(yv) > 0)
+        alt_options = [a for a in alt_all if _alt_has_payload_curve_data(a)]
         sel_alt = st.selectbox("Cruise Altitude", options=alt_options) if alt_options else None
         if sel_alt is not None:
             if cruise_mode == "MCT (Max Thrust)":
@@ -349,12 +359,26 @@ if summary_df is not None and len(summary_df) > 0:
                 has_kias = ("kias" in filtered.columns) and pd.to_numeric(filtered.get("kias"), errors="coerce").notna().any()
                 speed_col = "kias" if has_kias else "mach"
                 speed_label = "IAS (kts)" if speed_col == "kias" else "Mach"
-                speed_options = sorted(pd.to_numeric(filtered[speed_col], errors="coerce").dropna().unique().tolist(), reverse=True)
-                sel_speed = st.selectbox(speed_label, options=speed_options) if speed_options else None
+                all_speed_opts = sorted(pd.to_numeric(filtered[speed_col], errors="coerce").dropna().unique().tolist(), reverse=True)
+                # Only allow speeds that yield data for this altitude
+                def _has_data_for_speed_payload_range(sval):
+                    if speed_col == "mach":
+                        return len(filtered[(filtered["cruise_alt"] == sel_alt) & (np.isclose(pd.to_numeric(filtered["mach"], errors="coerce"), float(sval)))]) > 0
+                    else:
+                        return len(filtered[(filtered["cruise_alt"] == sel_alt) & (pd.to_numeric(filtered["kias"], errors="coerce") == int(sval))]) > 0
+                speed_options = [s for s in all_speed_opts if _has_data_for_speed_payload_range(s)]
+                sel_speed = st.selectbox(
+                    speed_label,
+                    options=speed_options,
+                    format_func=(lambda x: f"{x:.2f}" if speed_col == "mach" else f"{int(x)}")
+                ) if speed_options else None
                 df_pr = filtered[(filtered["cruise_alt"] == sel_alt) & (
                     (np.isclose(pd.to_numeric(filtered["mach"], errors="coerce"), float(sel_speed)) if speed_col=="mach" else (pd.to_numeric(filtered["kias"], errors="coerce") == int(sel_speed)))
                 )] if sel_speed is not None else filtered[filtered["cruise_alt"] == sel_alt]
-                title_suffix = (f", {speed_label} {sel_speed}" if sel_speed is not None else "")
+                if sel_speed is not None:
+                    title_suffix = (f", M {float(sel_speed):.2f}" if speed_col == "mach" else f", IAS {int(sel_speed)} kt")
+                else:
+                    title_suffix = ""
             else:
                 # Optimization modes: ignore speed facet
                 df_pr = filtered[filtered["cruise_alt"] == sel_alt]
@@ -366,6 +390,8 @@ if summary_df is not None and len(summary_df) > 0:
                 mods = sorted(df_pr["mod"].dropna().unique().tolist())
                 aircrafts = sorted(df_pr["aircraft"].dropna().unique().tolist())
                 color_map = {"Flatwing": "red", "Tamarack": "green"}
+                dash_for = { -20: "longdashdot", -10: "dash", 0: "solid", 10: "dot", 20: "dashdot", 30: "longdash" }
+                marker_for = { -20: "triangle-up", -10: "square", 0: "circle", 10: "diamond", 20: "x", 30: "triangle-down" }
                 for mod in mods:
                     for a in aircrafts:
                         for dev in sorted(df_pr["isa_dev"].dropna().unique()):
@@ -394,7 +420,8 @@ if summary_df is not None and len(summary_df) > 0:
                             x_vals = dfg["x_num"].to_numpy()
                             y_vals = dfg["payload"].to_numpy()
                             x_mon = np.maximum.accumulate(x_vals)
-                            x_plot = np.concatenate(([0.0], x_mon[:-1])) if len(x_mon) >= 1 else x_mon
+                            # Use actual computed values; do not prepend a zero anchor which falsely suggests 0 endurance/range at max payload
+                            x_plot = x_mon
                             if len(x_plot) > 1:
                                 keep = np.concatenate(([True], x_plot[1:] > x_plot[:-1] + 1e-9))
                                 x_plot = x_plot[keep]
@@ -403,9 +430,10 @@ if summary_df is not None and len(summary_df) > 0:
                             fig.add_trace(go.Scatter(
                                 x=x_plot,
                                 y=y_vals,
-                                mode="lines",
+                                mode="lines+markers",
                                 name=f"{label_mod} Max Achieved {att_m_txt}, Attained {att_fl_txt} - {a} - ISA {int(dev):+d}°C",
-                                line=dict(color=color_map.get(mod, None))
+                                line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid"), width=2.5),
+                                marker=dict(symbol=marker_for.get(int(dev), "circle"), size=6)
                             ))
                 fig.update_layout(
                     title=f"{title_base} at FL{int(sel_alt/100):.0f}{title_suffix}",
@@ -416,6 +444,16 @@ if summary_df is not None and len(summary_df) > 0:
                     height=600,
                     xaxis=dict(showgrid=True, gridcolor="LightGrey", gridwidth=1)
                 )
+                if x_axis_label.startswith("Range"):
+                    fig.update_xaxes(tickformat=",.0f")
+                # Always show payload as integer pounds
+                fig.update_yaxes(tickformat=",.0f")
+                # Clean hover labels to integers for both axes when plotting Range vs Payload
+                if x_axis_label.startswith("Range"):
+                    fig.update_traces(hovertemplate=(f"{x_axis_label}: " + "%{x:,.0f}<br>Payload (lb): %{y:,.0f}<extra></extra>"))
+                elif x_axis_label.startswith("Endurance"):
+                    fig.update_xaxes(tickformat=",.0f")
+                    fig.update_traces(hovertemplate=(f"{x_axis_label}: " + "%{x:,.0f}<br>Payload (lb): %{y:,.0f}<extra></extra>"))
                 st.plotly_chart(fig, use_container_width=False)
             else:
                 st.info("No data for selected altitude.")
@@ -424,7 +462,12 @@ if summary_df is not None and len(summary_df) > 0:
     if "Max Range vs Mach" in plot_choices:
         st.subheader("Max Range vs Mach (Payload = 0)")
         # Choose altitude
-        alt_options = sorted(filtered["cruise_alt"].unique().tolist(), reverse=True)
+        alt_all = sorted(filtered[filtered["payload"] == 0]["cruise_alt"].unique().tolist(), reverse=True)
+        # Only altitudes with numeric range values
+        def _alt_has_rvm(a):
+            sub = filtered[(filtered["payload"] == 0) & (filtered["cruise_alt"] == a)]
+            return pd.to_numeric(sub.get("total_dist_nm"), errors="coerce").notna().any()
+        alt_options = [a for a in alt_all if _alt_has_rvm(a)]
         if alt_options:
             sel_alt = st.selectbox("Altitude for Range vs Mach", options=alt_options, key="rvsm_alt")
             df_mach = filtered[(filtered["payload"] == 0) & (filtered["cruise_alt"] == sel_alt)]
@@ -440,6 +483,7 @@ if summary_df is not None and len(summary_df) > 0:
                 fig = go.Figure()
                 color_map = {"Flatwing": "red", "Tamarack": "green"}
                 dash_for = { -20: "longdashdot", -10: "dash", 0: "solid", 10: "dot", 20: "dashdot", 30: "longdash" }
+                marker_for = { -20: "triangle-up", -10: "square", 0: "circle", 10: "diamond", 20: "x", 30: "triangle-down" }
                 for mod in sorted(df_mach["mod"].dropna().unique().tolist()):
                     d_mod = df_mach[df_mach["mod"] == mod]
                     for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
@@ -455,13 +499,15 @@ if summary_df is not None and len(summary_df) > 0:
                             fig.add_trace(go.Scatter(
                                 x=d_line[speed_col],
                                 y=d_line["total_dist_nm"],
-                                mode="lines",
+                                mode="lines+markers",
                                 name=(f"{label_mod} Attained {att_fl_txt} - ISA {int(dev):+d}°C" if first_legend else None),
-                                line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid")),
+                                line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid"), width=2.5),
+                                marker=dict(symbol=marker_for.get(int(dev), "circle"), size=6),
                                 showlegend=first_legend
                             ))
                             first_legend = False
                 fig.update_layout(title=title_txt, xaxis_title=x_label, yaxis_title="Max Range (NM)", template="plotly_white", width=1000, height=600, xaxis=dict(showgrid=True, gridcolor="LightGrey", gridwidth=1))
+                fig.update_yaxes(tickformat=",.0f")
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("No payload=0 data at selected altitude.")
@@ -469,7 +515,7 @@ if summary_df is not None and len(summary_df) > 0:
     # Max Endurance vs Mach (payload = 0)
     if "Max Endurance vs Mach" in plot_choices:
         st.subheader("Max Endurance vs Mach (Payload = 0)")
-        alt_options = sorted(filtered["cruise_alt"].unique().tolist(), reverse=True)
+        alt_options = sorted(filtered[filtered["payload"] == 0]["cruise_alt"].unique().tolist(), reverse=True)
         if alt_options:
             sel_alt = st.selectbox("Altitude for Endurance vs Mach", options=alt_options, key="evsm_alt")
             df_end = filtered[(filtered["payload"] == 0) & (filtered["cruise_alt"] == sel_alt)]
@@ -485,6 +531,7 @@ if summary_df is not None and len(summary_df) > 0:
                 fig = go.Figure()
                 color_map = {"Flatwing": "red", "Tamarack": "green"}
                 dash_for = { -20: "longdashdot", -10: "dash", 0: "solid", 10: "dot", 20: "dashdot", 30: "longdash" }
+                marker_for = { -20: "triangle-up", -10: "square", 0: "circle", 10: "diamond", 20: "x", 30: "triangle-down" }
                 for mod in sorted(df_end["mod"].dropna().unique().tolist()):
                     d_mod = df_end[df_end["mod"] == mod]
                     for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
@@ -499,9 +546,10 @@ if summary_df is not None and len(summary_df) > 0:
                             fig.add_trace(go.Scatter(
                                 x=d_line[speed_col],
                                 y=d_line["total_time_min"],
-                                mode="lines",
+                                mode="lines+markers",
                                 name=(f"{label_mod} Attained {att_fl_txt} - ISA {int(dev):+d}°C" if first_legend else None),
-                                line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid")),
+                                line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid"), width=2.5),
+                                marker=dict(symbol=marker_for.get(int(dev), "circle"), size=6),
                                 showlegend=first_legend
                             ))
                             first_legend = False
@@ -517,36 +565,41 @@ if summary_df is not None and len(summary_df) > 0:
             st.subheader("Max Endurance vs Altitude (Payload = 0)")
         else:
             st.subheader("Max Range vs Altitude (Payload = 0)")
-        # Choose speed (Mach for jets, IAS for turboprops)
-        has_kias = ("kias" in filtered.columns) and pd.to_numeric(filtered.get("kias"), errors="coerce").notna().any()
-        speed_col = "kias" if has_kias else "mach"
-        speed_label = "IAS (kts)" if speed_col == "kias" else "Mach"
-        if has_kias:
-            speed_options = sorted(pd.to_numeric(filtered["kias"], errors="coerce").dropna().unique().tolist(), reverse=True)
-        else:
-            speed_options = sorted(pd.to_numeric(filtered["mach"], errors="coerce").dropna().unique().tolist(), reverse=True)
-        if speed_options:
-            sel_speed = st.selectbox(f"{speed_label} for Range vs Altitude", options=speed_options, key="rva_speed")
-            if speed_col == "mach":
-                df_alt = filtered[(filtered["payload"] == 0) & (np.isclose(pd.to_numeric(filtered["mach"], errors="coerce"), float(sel_speed)))]
-            else:
-                df_alt = filtered[(filtered["payload"] == 0) & (pd.to_numeric(filtered["kias"], errors="coerce") == int(sel_speed))]
-            if cruise_mode == "MCT (Max Thrust)":
+        # In optimized modes, ignore speed facet entirely; only filter by payload.
+        if cruise_mode == "MCT (Max Thrust)":
+            # Choose speed (Mach for jets, IAS for turboprops)
+            has_kias = ("kias" in filtered.columns) and pd.to_numeric(filtered.get("kias"), errors="coerce").notna().any()
+            speed_col = "kias" if has_kias else "mach"
+            speed_label = "IAS (kts)" if speed_col == "kias" else "Mach"
+            all_speed_opts = sorted(pd.to_numeric(filtered["kias" if has_kias else "mach"], errors="coerce").dropna().unique().tolist(), reverse=True)
+            # Only keep speeds that yield any payload=0 data across altitudes
+            def _has_data_for_speed_rva(sval):
+                if speed_col == "mach":
+                    return len(filtered[(filtered["payload"] == 0) & (np.isclose(pd.to_numeric(filtered["mach"], errors="coerce"), float(sval)))]) > 0
+                else:
+                    return len(filtered[(filtered["payload"] == 0) & (pd.to_numeric(filtered["kias"], errors="coerce") == int(sval))]) > 0
+            speed_options = [s for s in all_speed_opts if _has_data_for_speed_rva(s)]
+            if speed_options:
+                sel_speed = st.selectbox(
+                    f"{speed_label} for Range vs Altitude",
+                    options=speed_options,
+                    key="rva_speed",
+                    format_func=(lambda x: f"{x:.2f}" if speed_col == "mach" else f"{int(x)}")
+                )
+                if speed_col == "mach":
+                    df_alt = filtered[(filtered["payload"] == 0) & (np.isclose(pd.to_numeric(filtered["mach"], errors="coerce"), float(sel_speed)))]
+                else:
+                    df_alt = filtered[(filtered["payload"] == 0) & (pd.to_numeric(filtered["kias"], errors="coerce") == int(sel_speed))]
                 title_txt = (f"Max Range vs {'IAS' if speed_col=='kias' else 'Mach'} at M {float(sel_speed):.2f} Goal" if speed_col == "mach" else f"Max Range vs {'IAS' if speed_col=='kias' else 'Mach'} at IAS {int(sel_speed)} kt")
             else:
-                if cruise_mode == "Max Endurance":
-                    title_txt = "Max Endurance vs Altitude (Optimized)"
-                else:
-                    title_txt = "Max Range vs Altitude (Optimized)"
+                df_alt = filtered[filtered["payload"] == 0]
+                title_txt = "Max Range vs Altitude"
         else:
             df_alt = filtered[filtered["payload"] == 0]
-            if cruise_mode == "MCT (Max Thrust)":
-                title_txt = "Max Range vs Altitude"
+            if cruise_mode == "Max Endurance":
+                title_txt = "Max Endurance vs Altitude (Optimized)"
             else:
-                if cruise_mode == "Max Endurance":
-                    title_txt = "Max Endurance vs Altitude (Optimized)"
-                else:
-                    title_txt = "Max Range vs Altitude (Optimized)"
+                title_txt = "Max Range vs Altitude (Optimized)"
         if len(df_alt) > 0:
             # Create ISA deviation labels for better legend
             df_alt = df_alt.copy()
@@ -555,6 +608,7 @@ if summary_df is not None and len(summary_df) > 0:
             fig = go.Figure()
             color_map = {"Flatwing": "red", "Tamarack": "green"}
             dash_for = { -20: "longdashdot", -10: "dash", 0: "solid", 10: "dot", 20: "dashdot", 30: "longdash" }
+            marker_for = { -20: "triangle-up", -10: "square", 0: "circle", 10: "diamond", 20: "x", 30: "triangle-down" }
             for mod in sorted(df_alt["mod"].dropna().unique().tolist()):
                 d_mod = df_alt[df_alt["mod"] == mod]
                 for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
@@ -578,28 +632,43 @@ if summary_df is not None and len(summary_df) > 0:
                         fig.add_trace(go.Scatter(
                             x=d_line["cruise_alt"],
                             y=y_vals,
-                            mode="lines",
+                            mode="lines+markers",
                             name=(f"{label_mod} Max Achieved {att_m_txt}, Attained {att_fl_txt} - ISA {int(dev):+d}°C" if first_legend else None),
-                            line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid")),
+                            line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid"), width=2.5),
+                            marker=dict(symbol=marker_for.get(int(dev), "circle"), size=6),
                             showlegend=first_legend
                         ))
                         first_legend = False
             fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title=y_label, template="plotly_white", xaxis=dict(showgrid=True, gridcolor="LightGrey", gridwidth=1))
+            if y_label.startswith("Max Range"):
+                fig.update_yaxes(tickformat=",.0f")
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No payload=0 data at selected Mach.")
+            st.info("No payload=0 data for range vs altitude.")
 
     # Endurance vs Altitude (payload = 0)
-    if "Endurance vs Altitude" in plot_choices:
-        st.subheader("Endurance vs Altitude (Payload = 0)")
+    if "Max Endurance vs Altitude" in plot_choices:
+        st.subheader("Max Endurance vs Altitude (Payload = 0)")
         if cruise_mode == "MCT (Max Thrust)":
             # Choose speed (Mach for jets, IAS for turboprops)
             has_kias = ("kias" in filtered.columns) and pd.to_numeric(filtered.get("kias"), errors="coerce").notna().any()
             speed_col = "kias" if has_kias else "mach"
             speed_label = "IAS (kts)" if speed_col == "kias" else "Mach"
-            speed_options = sorted(pd.to_numeric(filtered[speed_col], errors="coerce").dropna().unique().tolist(), reverse=True)
+            all_speed_opts = sorted(pd.to_numeric(filtered[speed_col], errors="coerce").dropna().unique().tolist(), reverse=True)
+            # Only keep speeds that yield any payload=0 data across altitudes
+            def _has_data_for_speed_eva(sval):
+                if speed_col == "mach":
+                    return len(filtered[(filtered["payload"] == 0) & (np.isclose(pd.to_numeric(filtered["mach"], errors="coerce"), float(sval)))]) > 0
+                else:
+                    return len(filtered[(filtered["payload"] == 0) & (pd.to_numeric(filtered["kias"], errors="coerce") == int(sval))]) > 0
+            speed_options = [s for s in all_speed_opts if _has_data_for_speed_eva(s)]
             if speed_options:
-                sel_speed = st.selectbox(f"{speed_label} for Endurance vs Altitude", options=speed_options, key="eva_speed")
+                sel_speed = st.selectbox(
+                    f"{speed_label} for Max Endurance vs Altitude",
+                    options=speed_options,
+                    key="eva_speed",
+                    format_func=(lambda x: f"{x:.2f}" if speed_col == "mach" else f"{int(x)}")
+                )
                 if speed_col == "mach":
                     df_alt = filtered[(filtered["payload"] == 0) & (np.isclose(pd.to_numeric(filtered["mach"], errors="coerce"), float(sel_speed)))]
                 else:
@@ -618,6 +687,7 @@ if summary_df is not None and len(summary_df) > 0:
             fig = go.Figure()
             color_map = {"Flatwing": "red", "Tamarack": "green"}
             dash_for = { -20: "longdashdot", -10: "dash", 0: "solid", 10: "dot", 20: "dashdot", 30: "longdash" }
+            marker_for = { -20: "triangle-up", -10: "square", 0: "circle", 10: "diamond", 20: "x", 30: "triangle-down" }
             for mod in sorted(df_alt["mod"].dropna().unique().tolist()):
                 d_mod = df_alt[df_alt["mod"] == mod]
                 for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
@@ -632,16 +702,17 @@ if summary_df is not None and len(summary_df) > 0:
                         fig.add_trace(go.Scatter(
                             x=d_line["cruise_alt"],
                             y=d_line["total_time_min"],
-                            mode="lines",
+                            mode="lines+markers",
                             name=(f"{label_mod} Attained {att_fl_txt} - ISA {int(dev):+d}°C" if first_legend else None),
-                            line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid")),
+                            line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid"), width=2.5),
+                            marker=dict(symbol=marker_for.get(int(dev), "circle"), size=6),
                             showlegend=first_legend
                         ))
                         first_legend = False
             fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title="Max Endurance (min)", template="plotly_white", xaxis=dict(showgrid=True, gridcolor="LightGrey", gridwidth=1))
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No payload=0 data for endurance vs altitude.")
+            st.info("No payload=0 data for Max Endurance vs Altitude.")
 
 else:
     st.info("Configure parameters in the sidebar and click 'Run Sweep.'")

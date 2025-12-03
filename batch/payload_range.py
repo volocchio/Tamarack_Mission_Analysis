@@ -602,9 +602,10 @@ def run_payload_range_batch(
                                 x_vals = df_plot["x_num"].to_numpy()
                                 y_vals = df_plot["payload"].to_numpy()
                                 x_mon = np.maximum.accumulate(x_vals)
-                                x_plot = np.concatenate(([0.0], x_mon[:-1])) if len(x_mon) >= 1 else x_mon
+                                # Do not prepend a zero anchor; use actual computed values
+                                x_plot = x_mon
                                 if len(x_plot) > 1:
-                                    keep = np.concatenate(((x_plot[:-1] < x_plot[1:] - 1e-9), [True]))
+                                    keep = np.concatenate(([True], x_plot[1:] > x_plot[:-1] + 1e-9))
                                     x_plot = x_plot[keep]
                                     y_vals = y_vals[keep]
                                 fig.add_trace(go.Scatter(
@@ -667,9 +668,10 @@ def run_payload_range_batch(
                                     x_vals = df_plot["total_dist_nm_num"].to_numpy()
                                     y_vals = df_plot["payload"].to_numpy()
                                     x_mon = np.maximum.accumulate(x_vals)
-                                    x_plot = np.concatenate(([0.0], x_mon[:-1])) if len(x_mon) >= 1 else x_mon
+                                    # Do not prepend a zero anchor; use actual computed values
+                                    x_plot = x_mon
                                     if len(x_plot) > 1:
-                                        keep = np.concatenate(((x_plot[:-1] < x_plot[1:] - 1e-9), [True]))
+                                        keep = np.concatenate(([True], x_plot[1:] > x_plot[:-1] + 1e-9))
                                         x_plot = x_plot[keep]
                                         y_vals = y_vals[keep]
                                     fig.add_trace(go.Scatter(
@@ -831,6 +833,7 @@ def run_payload_range_batch(
                             template="plotly_white"
                         )
                         fig.write_image(str(aircraft_summary_dir / f"endurance_vs_mach_{aircraft}_FL{int(alt/100)}.png"), width=1600, height=900, scale=2)
+            
             if cruise_mode == "MCT (Max Thrust)":
                 # Family: Range vs Altitude by Mach (payload 0)
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
@@ -849,6 +852,7 @@ def run_payload_range_batch(
                             if df_mod.empty:
                                 continue
                             color = "red" if mod == "Flatwing" else "green"
+                            label_mod = "BL" if mod == "Flatwing" else "Mod"
                             for isa_dev in sorted(df_mod["isa_dev"].unique()):
                                 df_isa = df_mod[df_mod["isa_dev"] == isa_dev]
                                 if df_isa.empty:
@@ -879,6 +883,55 @@ def run_payload_range_batch(
                             template="plotly_white"
                         )
                         fig.write_image(str(aircraft_summary_dir / f"range_vs_altitude_{aircraft}_M{mach:.2f}.png"), width=1600, height=900, scale=2)
+            if cruise_mode == "MCT (Max Thrust)":
+                # Family: Endurance vs Altitude by Mach (payload 0)
+                for aircraft in sorted(df["aircraft"].dropna().unique()):
+                    df_a0 = df[(df["aircraft"]==aircraft) & (df["payload"]==0)]
+                    aircraft_summary_dir = aircraft_dirs[aircraft]["summary_plots"]
+                    
+                    for mach in sorted(df_a0["mach"].dropna().unique(), reverse=True):
+                        df_mach = df_a0[np.isclose(df_a0["mach"], mach)]
+                        if df_mach.empty:
+                            continue
+                        df_mach = df_mach.copy()
+                        df_mach.loc[:, "isa_label"] = df_mach["isa_dev"].apply(lambda x: f"ISA {x:+d}°C")
+                        fig = go.Figure()
+                        for mod in sorted(df_mach["mod"].unique()):
+                            df_mod = df_mach[df_mach["mod"] == mod]
+                            if df_mod.empty:
+                                continue
+                            color = "red" if mod == "Flatwing" else "green"
+                            label_mod = "BL" if mod == "Flatwing" else "Mod"
+                            for isa_dev in sorted(df_mod["isa_dev"].unique()):
+                                df_isa = df_mod[df_mod["isa_dev"] == isa_dev]
+                                if df_isa.empty:
+                                    continue
+                                df_plot = df_isa.sort_values("cruise_alt")
+                                isa_label = f"ISA {isa_dev:+d}°C"
+                                try:
+                                    att_m = pd.to_numeric(df_plot.get("achieved_mach"), errors="coerce").dropna()
+                                    att_m_txt = f"M {att_m.max():.2f}" if len(att_m) > 0 else "M —"
+                                except Exception:
+                                    att_m_txt = "M —"
+                                try:
+                                    att_alt = pd.to_numeric(df_plot.get("first_level_off_ft"), errors="coerce").dropna()
+                                    att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                                except Exception:
+                                    att_fl_txt = "FL—"
+                                fig.add_trace(go.Scatter(
+                                    x=df_plot["cruise_alt"], 
+                                    y=df_plot["total_time_min"], 
+                                    mode="lines", 
+                                    name=f"{label_mod} Max Achieved {att_m_txt}, Attained {att_fl_txt} - {isa_label}",
+                                    line=dict(color=color, dash=("dash" if isa_dev == -10 else "solid" if isa_dev == 0 else "dot" if isa_dev == 10 else "dashdot"))
+                                ))
+                        fig.update_layout(
+                            title=f"Endurance vs Altitude (Payload=0) | {aircraft} | M {mach:.2f} Goal",
+                            xaxis_title="Target Altitude (ft)",
+                            yaxis_title="Endurance (min)",
+                            template="plotly_white"
+                        )
+                        fig.write_image(str(aircraft_summary_dir / f"endurance_vs_altitude_{aircraft}_M{mach:.2f}.png"), width=1600, height=900, scale=2)
         except Exception:
             # Best-effort; ignore plotting errors to keep batch running
             pass
