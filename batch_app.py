@@ -55,7 +55,7 @@ with st.sidebar:
     # Cruise mode selection (applies to cruise segment above 10k ft)
     cruise_mode = st.radio(
         "Cruise Mode",
-        ["MCT (Max Thrust)", "Max Range", "Max Endurance"],
+        ["MCT (Max Thrust)", "Max Range", "Max Endurance", "Speed Sweep (Mach/IAS)"],
         index=0,
         help="For Max Range/Endurance, cruise Mach is optimized using CL/CD criteria with V >= 1.2 × Vs (EAS)."
     )
@@ -77,7 +77,7 @@ with st.sidebar:
     # Sweep grids (range with steps)
     st.header("Sweep Grids")
     st.caption("Custom ranges will be filtered per-aircraft (Mach <= MMO, Alt <= ceiling, Alt >= 5000). Use negative steps for descending ranges.")
-    if cruise_mode == "MCT (Max Thrust)":
+    if cruise_mode == "Speed Sweep (Mach/IAS)":
         # Prefer IAS for turboprops
         selected_is_turboprop = bool(selected_aircraft) and all(a in TURBOPROP_PARAMS for a in selected_aircraft)
         speed_type = st.radio("Speed type", options=["Mach", "IAS (kts)"], index=(1 if selected_is_turboprop else 0), horizontal=True)
@@ -116,7 +116,7 @@ with st.sidebar:
     # Plot types
     st.header("Plots to show")
     payload_curve_label = ("Payload-Endurance Curves" if cruise_mode == "Max Endurance" else "Payload-Range Curves")
-    if cruise_mode == "MCT (Max Thrust)":
+    if cruise_mode == "Speed Sweep (Mach/IAS)":
         plot_options = [
             payload_curve_label,
             "Max Range vs Mach",
@@ -125,6 +125,14 @@ with st.sidebar:
             "Max Endurance vs Altitude",
         ]
         default_plots = [payload_curve_label, "Max Range vs Mach", "Max Endurance vs Mach", "Max Range vs Altitude", "Max Endurance vs Altitude"]
+        plots_key = "plots_speed_sweep"
+    elif cruise_mode == "MCT (Max Thrust)":
+        plot_options = [
+            payload_curve_label,
+            "Max Range vs Altitude",
+            "Max Endurance vs Altitude",
+        ]
+        default_plots = [payload_curve_label, "Max Range vs Altitude", "Max Endurance vs Altitude"]
         plots_key = "plots_mct"
     else:
         # Optimized modes: hide Mach-based plots entirely and only show the relevant altitude plot
@@ -181,7 +189,7 @@ with st.sidebar:
         except Exception:
             return 1
 
-    if cruise_mode == "MCT (Max Thrust)":
+    if cruise_mode == "Speed Sweep (Mach/IAS)":
         if speed_type == "Mach":
             speed_count_est = _count_range_float(float(mach_start), float(mach_end), float(mach_step))
         else:
@@ -244,7 +252,7 @@ if run_clicked:
                     x += step
             return list(dict.fromkeys(vals))
 
-        if cruise_mode == "MCT (Max Thrust)":
+        if cruise_mode == "Speed Sweep (Mach/IAS)":
             if mach_start is not None:
                 mach_values = build_range(float(mach_start), float(mach_end), float(mach_step))
                 kias_values = None
@@ -354,7 +362,7 @@ if summary_df is not None and len(summary_df) > 0:
         alt_options = [a for a in alt_all if _alt_has_payload_curve_data(a)]
         sel_alt = st.selectbox("Cruise Altitude", options=alt_options) if alt_options else None
         if sel_alt is not None:
-            if cruise_mode == "MCT (Max Thrust)":
+            if cruise_mode == "Speed Sweep (Mach/IAS)":
                 # Keep speed facet for MCT
                 has_kias = ("kias" in filtered.columns) and pd.to_numeric(filtered.get("kias"), errors="coerce").notna().any()
                 speed_col = "kias" if has_kias else "mach"
@@ -382,7 +390,10 @@ if summary_df is not None and len(summary_df) > 0:
             else:
                 # Optimization modes: ignore speed facet
                 df_pr = filtered[filtered["cruise_alt"] == sel_alt]
-                title_suffix = f", Optimized for {cruise_mode}"
+                if cruise_mode in ("Max Range", "Max Endurance"):
+                    title_suffix = f", Optimized for {cruise_mode}"
+                else:
+                    title_suffix = ", MCT (Max Thrust)"
             if len(df_pr) > 0:
                 df_pr = df_pr.copy()
                 df_pr["isa_label"] = df_pr["isa_dev"].apply(lambda x: f"ISA {x:+d}°C")
@@ -566,7 +577,7 @@ if summary_df is not None and len(summary_df) > 0:
         else:
             st.subheader("Max Range vs Altitude (Payload = 0)")
         # In optimized modes, ignore speed facet entirely; only filter by payload.
-        if cruise_mode == "MCT (Max Thrust)":
+        if cruise_mode == "Speed Sweep (Mach/IAS)":
             # Choose speed (Mach for jets, IAS for turboprops)
             has_kias = ("kias" in filtered.columns) and pd.to_numeric(filtered.get("kias"), errors="coerce").notna().any()
             speed_col = "kias" if has_kias else "mach"
@@ -599,7 +610,7 @@ if summary_df is not None and len(summary_df) > 0:
             if cruise_mode == "Max Endurance":
                 title_txt = "Max Endurance vs Altitude (Optimized)"
             else:
-                title_txt = "Max Range vs Altitude (Optimized)"
+                title_txt = ("Max Range vs Altitude (Optimized)" if cruise_mode == "Max Range" else "Max Range vs Altitude (MCT)")
         if len(df_alt) > 0:
             # Create ISA deviation labels for better legend
             df_alt = df_alt.copy()
@@ -649,7 +660,7 @@ if summary_df is not None and len(summary_df) > 0:
     # Endurance vs Altitude (payload = 0)
     if "Max Endurance vs Altitude" in plot_choices:
         st.subheader("Max Endurance vs Altitude (Payload = 0)")
-        if cruise_mode == "MCT (Max Thrust)":
+        if cruise_mode == "Speed Sweep (Mach/IAS)":
             # Choose speed (Mach for jets, IAS for turboprops)
             has_kias = ("kias" in filtered.columns) and pd.to_numeric(filtered.get("kias"), errors="coerce").notna().any()
             speed_col = "kias" if has_kias else "mach"
@@ -679,7 +690,7 @@ if summary_df is not None and len(summary_df) > 0:
         else:
             # Optimization modes: ignore speed facet
             df_alt = filtered[filtered["payload"] == 0]
-            title_txt = "Max Endurance vs Altitude (Optimized)"
+            title_txt = ("Max Endurance vs Altitude (Optimized)" if cruise_mode == "Max Endurance" else "Max Endurance vs Altitude (MCT)")
         if len(df_alt) > 0:
             # Create ISA deviation labels for better legend
             df_alt = df_alt.copy()

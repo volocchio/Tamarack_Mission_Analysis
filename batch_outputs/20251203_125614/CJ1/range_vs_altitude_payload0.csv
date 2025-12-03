@@ -1,0 +1,17 @@
+aircraft,mod,flap,isa_dev,mach,cruise_alt,payload,total_dist_nm
+CJ1,Flatwing,0,-10,0.0,41000,0,n/p
+CJ1,Flatwing,0,-10,0.0,39000,0,1089.9903348427706
+CJ1,Flatwing,0,0,0.0,41000,0,n/p
+CJ1,Flatwing,0,0,0.0,39000,0,n/p
+CJ1,Flatwing,0,10,0.0,41000,0,n/p
+CJ1,Flatwing,0,10,0.0,39000,0,n/p
+CJ1,Flatwing,0,20,0.0,41000,0,n/p
+CJ1,Flatwing,0,20,0.0,39000,0,n/p
+CJ1,Tamarack,0,-10,0.0,41000,0,1188.272276640933
+CJ1,Tamarack,0,-10,0.0,39000,0,1014.4820872478858
+CJ1,Tamarack,0,0,0.0,41000,0,1283.260817488821
+CJ1,Tamarack,0,0,0.0,39000,0,1091.6106174413958
+CJ1,Tamarack,0,10,0.0,41000,0,n/p
+CJ1,Tamarack,0,10,0.0,39000,0,1172.333329223869
+CJ1,Tamarack,0,20,0.0,41000,0,n/p
+CJ1,Tamarack,0,20,0.0,39000,0,1259.5968823795026

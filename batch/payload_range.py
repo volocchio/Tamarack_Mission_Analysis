@@ -108,6 +108,10 @@ def run_single_case(case: dict, hide_mach_limited: bool = False, hide_altitude_l
                 "cruise_vktas_kts": np.nan,
             }
 
+        # Decide whether to pass explicit speed overrides
+        _is_sweep_mode = (cruise_mode == "Speed Sweep (Mach/IAS)")
+        cm_override = float(mach) if (_is_sweep_mode and kias is None) else None
+        ck_override = float(kias) if (_is_sweep_mode and kias is not None) else None
         df, results, *_ = run_simulation(
             dep,
             arr,
@@ -121,8 +125,8 @@ def run_single_case(case: dict, hide_mach_limited: bool = False, hide_altitude_l
             int(cruise_alt),
             "No Wind",
             False,
-            cruise_mach=float(mach),
-            cruise_kias=(float(kias) if kias is not None else None),
+            cruise_mach=cm_override,
+            cruise_kias=ck_override,
             isa_dev_c=float(isa_dev),
             range_mode=True,
             cruise_mode=cruise_mode,
@@ -208,8 +212,8 @@ def run_single_case(case: dict, hide_mach_limited: bool = False, hide_altitude_l
                     if seg67_m.notna().any():
                         achieved_mach = float(np.nanmax(seg67_m))
             out["achieved_mach"] = achieved_mach
-            # If using optimization mode, there is no target Mach limitation
-            if cruise_mode in ("Max Range", "Max Endurance"):
+            # If using optimization mode or MCT (no explicit target Mach), no Mach limitation
+            if cruise_mode in ("Max Range", "Max Endurance", "MCT (Max Thrust)"):
                 out["mach_limited"] = False
             else:
                 target_mach = float(mach)
@@ -324,8 +328,9 @@ def run_payload_range_batch(
                 alt_grid = build_alt_grid(ceiling)
             # Determine speed grids
             is_optim_mode = (cruise_mode in ("Max Range", "Max Endurance"))
-            if is_optim_mode:
-                # No speed sweep in optimization modes; simulator will optimize speed internally
+            is_sweep_mode = (cruise_mode == "Speed Sweep (Mach/IAS)")
+            if not is_sweep_mode:
+                # No speed sweep in MCT or optimized modes; simulator will set speed internally
                 mach_grid = [0.0]
                 kias_grid = None
             else:
@@ -611,9 +616,17 @@ def run_payload_range_batch(
                                 fig.add_trace(go.Scatter(
                                     x=x_plot,
                                     y=y_vals,
-                                    mode="lines",
+                                    mode="lines+markers",
                                     name=f"{label_mod} Max Achieved {att_m_txt}, Attained {att_fl_txt} - {isa_label}",
-                                    line=dict(color=color, dash=("dash" if isa_dev == -10 else "solid" if isa_dev == 0 else "dot" if isa_dev == 10 else "dashdot"))
+                                    line=dict(color=color, dash=("longdashdot" if isa_dev == -20 else "dash" if isa_dev == -10 else "solid" if isa_dev == 0 else "dot" if isa_dev == 10 else "dashdot" if isa_dev == 20 else "longdash"), width=2.5),
+                                    marker=dict(symbol=(
+                                        "triangle-up" if isa_dev == -20 else
+                                        "square" if isa_dev == -10 else
+                                        "circle" if isa_dev == 0 else
+                                        "diamond" if isa_dev == 10 else
+                                        "x" if isa_dev == 20 else
+                                        "triangle-down"
+                                    ), size=6)
                                 ))
                         title_mode = "Max Endurance" if cruise_mode == "Max Endurance" else "Max Range"
                         fig.update_layout(
@@ -628,8 +641,8 @@ def run_payload_range_batch(
                             aircraft_summary_dir / f"payload_range_{aircraft}_alt{int(alt)}_optimized.png"
                         )
                         fig.write_image(str(fname), width=1400, height=900, scale=2)
-                    else:
-                        # MCT: facet by Mach as before
+                    elif cruise_mode == "Speed Sweep (Mach/IAS)":
+                        # Speed Sweep: facet by Mach as before
                         for mach in sorted(df_a["mach"].dropna().unique(), reverse=True):
                             df_filtered = df_a[(df_a["cruise_alt"]==alt) & (np.isclose(df_a["mach"], mach))]
                             if df_filtered.empty:
@@ -689,6 +702,73 @@ def run_payload_range_batch(
                             )
                             fname = aircraft_summary_dir / f"payload_range_{aircraft}_alt{int(alt)}_mach{mach:.2f}.png"
                             fig.write_image(str(fname), width=1400, height=900, scale=2)
+                    else:
+                        # MCT: no speed facet; mirror optimized behavior but without 'Optimized' in filename
+                        df_filtered = df_a[df_a["cruise_alt"]==alt]
+                        if df_filtered.empty:
+                            continue
+                        df_filtered = df_filtered.copy()
+                        df_filtered.loc[:, "isa_label"] = df_filtered["isa_dev"].apply(lambda x: f"ISA {x:+d}°C")
+                        fig = go.Figure()
+                        for mod in sorted(df_filtered["mod"].unique()):
+                            df_mod = df_filtered[df_filtered["mod"] == mod]
+                            if df_mod.empty:
+                                continue
+                            color = "red" if mod == "Flatwing" else "green"
+                            label_mod = "BL" if mod == "Flatwing" else "Mod"
+                            for isa_dev in sorted(df_mod["isa_dev"].unique()):
+                                df_isa = df_mod[df_mod["isa_dev"] == isa_dev]
+                                if df_isa.empty:
+                                    continue
+                                df_plot = df_isa.sort_values("payload", ascending=False).copy()
+                                isa_label = f"ISA {isa_dev:+d}°C"
+                                try:
+                                    att_m = pd.to_numeric(df_isa.get("achieved_mach"), errors="coerce").dropna()
+                                    att_m_txt = f"M {att_m.max():.2f}" if len(att_m) > 0 else "M —"
+                                except Exception:
+                                    att_m_txt = "M —"
+                                try:
+                                    att_alt = pd.to_numeric(df_isa.get("first_level_off_ft"), errors="coerce").dropna()
+                                    att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                                except Exception:
+                                    att_fl_txt = "FL—"
+                                df_plot.loc[:, "total_dist_nm_num"] = pd.to_numeric(df_plot["total_dist_nm"], errors="coerce")
+                                df_plot = df_plot.dropna(subset=["total_dist_nm_num", "payload"])    
+                                if df_plot.empty:
+                                    continue
+                                df_plot = df_plot.groupby("payload", as_index=False).agg(total_dist_nm_num=("total_dist_nm_num", "max"))
+                                df_plot = df_plot.sort_values("payload", ascending=False)
+                                x_vals = df_plot["total_dist_nm_num"].to_numpy()
+                                y_vals = df_plot["payload"].to_numpy()
+                                x_mon = np.maximum.accumulate(x_vals)
+                                x_plot = x_mon
+                                if len(x_plot) > 1:
+                                    keep = np.concatenate(([True], x_plot[1:] > x_plot[:-1] + 1e-9))
+                                    x_plot = x_plot[keep]
+                                    y_vals = y_vals[keep]
+                                fig.add_trace(go.Scatter(
+                                    x=x_plot,
+                                    y=y_vals,
+                                    mode="lines+markers",
+                                    name=f"{label_mod} Max Achieved {att_m_txt}, Attained {att_fl_txt} - {isa_label}",
+                                    line=dict(color=color, dash=("longdashdot" if isa_dev == -20 else "dash" if isa_dev == -10 else "solid" if isa_dev == 0 else "dot" if isa_dev == 10 else "dashdot" if isa_dev == 20 else "longdash"), width=2.5),
+                                    marker=dict(symbol=(
+                                        "triangle-up" if isa_dev == -20 else
+                                        "square" if isa_dev == -10 else
+                                        "circle" if isa_dev == 0 else
+                                        "diamond" if isa_dev == 10 else
+                                        "x" if isa_dev == 20 else
+                                        "triangle-down"
+                                    ), size=6)
+                                ))
+                        fig.update_layout(
+                            title=f"Payload-Range | {aircraft} | FL{int(alt/100)} | MCT (Max Thrust)",
+                            xaxis_title="Range (NM)",
+                            yaxis_title="Payload (lb)",
+                            template="plotly_white"
+                        )
+                        fname = aircraft_summary_dir / f"payload_range_{aircraft}_alt{int(alt)}_mct.png"
+                        fig.write_image(str(fname), width=1400, height=900, scale=2)
             # Optimized modes: Save Range/Endurance vs Altitude (payload=0)
             if cruise_mode in ("Max Range", "Max Endurance"):
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
@@ -729,14 +809,29 @@ def run_payload_range_batch(
                             fig.add_trace(go.Scatter(
                                 x=d_dev["cruise_alt"],
                                 y=y_vals,
-                                mode="lines",
+                                mode="lines+markers",
                                 name=f"{'BL' if mod=='Flatwing' else 'Mod'} Max Achieved {att_m_txt}, Attained {att_fl_txt} - ISA {int(dev):+d}°C",
-                                line=dict(color=color)
+                                line=dict(color=color, dash=(
+                                    "longdashdot" if int(dev) == -20 else
+                                    "dash" if int(dev) == -10 else
+                                    "solid" if int(dev) == 0 else
+                                    "dot" if int(dev) == 10 else
+                                    "dashdot" if int(dev) == 20 else
+                                    "longdash"
+                                ), width=2.5),
+                                marker=dict(symbol=(
+                                    "triangle-up" if int(dev) == -20 else
+                                    "square" if int(dev) == -10 else
+                                    "circle" if int(dev) == 0 else
+                                    "diamond" if int(dev) == 10 else
+                                    "x" if int(dev) == 20 else
+                                    "triangle-down"
+                                ), size=6)
                             ))
                     fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title=y_label, template="plotly_white")
                     fig.write_image(str(fname), width=1600, height=900, scale=2)
             # Family: Range vs Mach by Altitude (payload 0) with ISA temperature separation
-            if cruise_mode == "MCT (Max Thrust)":
+            if cruise_mode == "Speed Sweep (Mach/IAS)":
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
                     df_a0 = df[(df["aircraft"]==aircraft) & (df["payload"]==0)]
                     aircraft_summary_dir = aircraft_dirs[aircraft]["summary_plots"]
@@ -752,7 +847,7 @@ def run_payload_range_batch(
                         
                         fig = go.Figure()
                         for mod in sorted(df_alt["mod"].unique()):
-                            df_mod = df_alt[df_mod["mod"] == mod]
+                            df_mod = df_alt[df_alt["mod"] == mod]
                             if df_mod.empty:
                                 continue
                             
@@ -788,7 +883,7 @@ def run_payload_range_batch(
                             template="plotly_white"
                         )
                         fig.write_image(str(aircraft_summary_dir / f"range_vs_mach_{aircraft}_FL{int(alt/100)}.png"), width=1600, height=900, scale=2)
-            if cruise_mode == "MCT (Max Thrust)":
+            if cruise_mode == "Speed Sweep (Mach/IAS)":
                 # Family: Endurance vs Mach by Altitude (payload 0)
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
                     df_a0 = df[(df["aircraft"]==aircraft) & (df["payload"]==0)]
@@ -834,7 +929,7 @@ def run_payload_range_batch(
                         )
                         fig.write_image(str(aircraft_summary_dir / f"endurance_vs_mach_{aircraft}_FL{int(alt/100)}.png"), width=1600, height=900, scale=2)
             
-            if cruise_mode == "MCT (Max Thrust)":
+            if cruise_mode == "Speed Sweep (Mach/IAS)":
                 # Family: Range vs Altitude by Mach (payload 0)
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
                     df_a0 = df[(df["aircraft"]==aircraft) & (df["payload"]==0)]
@@ -883,7 +978,7 @@ def run_payload_range_batch(
                             template="plotly_white"
                         )
                         fig.write_image(str(aircraft_summary_dir / f"range_vs_altitude_{aircraft}_M{mach:.2f}.png"), width=1600, height=900, scale=2)
-            if cruise_mode == "MCT (Max Thrust)":
+            if cruise_mode == "Speed Sweep (Mach/IAS)":
                 # Family: Endurance vs Altitude by Mach (payload 0)
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
                     df_a0 = df[(df["aircraft"]==aircraft) & (df["payload"]==0)]
