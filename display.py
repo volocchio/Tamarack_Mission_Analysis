@@ -155,6 +155,26 @@ def write_metrics_with_headings(results_dict, label):
                 continue
             if field in results_dict:
                 st.write(f"{field}: {results_dict[field]}")
+        # Add PPH and block speed under Total section
+        if section == "Total":
+            try:
+                burn_lb = results_dict.get("Total Fuel Burned (lb)")
+                time_min = results_dict.get("Total Time (min)")
+                dist_nm = results_dict.get("Total Dist (NM)")
+                if burn_lb is not None and time_min is not None:
+                    tmin = float(time_min)
+                    if tmin > 0:
+                        pph = float(burn_lb) / (tmin / 60.0)
+                        st.write(f"PPH (lb/hr): {int(round(pph))}")
+                if time_min is not None and dist_nm is not None:
+                    tmin = float(time_min)
+                    dnm = float(dist_nm)
+                    if tmin > 0:
+                        hours = tmin / 60.0
+                        block_speed = dnm / hours
+                        st.write(f"Block Speed (kt): {block_speed:.1f}")
+            except Exception:
+                pass
 
 def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results):
     st.subheader("Flight Profile Charts")
@@ -350,7 +370,9 @@ def display_simulation_results(
     report_output_dir=None,
     weight_df_flatwing: pd.DataFrame | None = None,
     weight_df_tamarack: pd.DataFrame | None = None,
-    weight_df_single: pd.DataFrame | None = None
+    weight_df_single: pd.DataFrame | None = None,
+    modes_summary_df: pd.DataFrame | None = None,
+    fuel_cost_per_gal: float | None = None
 ):
     st.subheader("Flight Route Map")
     fig = go.Figure()
@@ -490,6 +512,47 @@ def display_simulation_results(
         else:
             st.info("No Flatwing results to display.")
 
+    # Comparison savings after the Total section when both aircraft are present
+    try:
+        if isinstance(tamarack_results, dict) and isinstance(flatwing_results, dict):
+            if tamarack_results.get("Total Fuel Burned (lb)") is not None and flatwing_results.get("Total Fuel Burned (lb)") is not None:
+                lb_per_gal = 6.7
+                t_burn_lb = float(tamarack_results.get("Total Fuel Burned (lb)", 0) or 0)
+                f_burn_lb = float(flatwing_results.get("Total Fuel Burned (lb)", 0) or 0)
+                t_time_min = float(tamarack_results.get("Total Time (min)", 0) or 0)
+                f_time_min = float(flatwing_results.get("Total Time (min)", 0) or 0)
+                t_hours = max(1e-6, t_time_min / 60.0)
+                f_hours = max(1e-6, f_time_min / 60.0)
+                savings_lb = f_burn_lb - t_burn_lb
+                savings_gal = savings_lb / lb_per_gal if lb_per_gal > 0 else 0.0
+                t_pph = t_burn_lb / t_hours
+                f_pph = f_burn_lb / f_hours
+                savings_pph = f_pph - t_pph
+                t_cost = None
+                f_cost = None
+                cost_savings = None
+                if fuel_cost_per_gal is not None:
+                    t_cost = (t_burn_lb / lb_per_gal) * float(fuel_cost_per_gal)
+                    f_cost = (f_burn_lb / lb_per_gal) * float(fuel_cost_per_gal)
+                    cost_savings = f_cost - t_cost
+                st.subheader("Comparison Savings")
+                rows = []
+                rows.append({
+                    "Metric": "Fuel Saved",
+                    "Value": f"{savings_lb:,.0f} lb ({savings_gal:,.1f} gal)"
+                })
+                rows.append({
+                    "Metric": "PPH Saved",
+                    "Value": f"{savings_pph:,.0f} lb/hr"
+                })
+                if t_cost is not None and f_cost is not None and cost_savings is not None:
+                    rows.append({"Metric": "Tamarack Fuel Cost", "Value": f"${t_cost:,.0f}"})
+                    rows.append({"Metric": "Flatwing Fuel Cost", "Value": f"${f_cost:,.0f}"})
+                    rows.append({"Metric": "Cost Savings", "Value": f"${cost_savings:,.0f}"})
+                st.table(pd.DataFrame(rows))
+    except Exception:
+        pass
+
     for results in [tamarack_results, flatwing_results]:
         if results.get("exceedances"):
             for msg in results["exceedances"]:
@@ -536,22 +599,89 @@ def display_simulation_results(
     if not burns_t and not burns_f:
         st.info("No time history available to compute hourly burn.")
     else:
-        if burns_t and burns_f:
-            n = max(len(burns_t), len(burns_f))
-            rows = []
-            for i in range(n):
-                rows.append({
-                    'Hour': i + 1,
-                    'Tamarack (lb)': (burns_t[i] if i < len(burns_t) else None),
-                    'Flatwing (lb)': (burns_f[i] if i < len(burns_f) else None)
-                })
+        try:
+            if burns_t and burns_f:
+                n = max(len(burns_t), len(burns_f))
+                rows = []
+                for i in range(n):
+                    rows.append({
+                        'Hour': i + 1,
+                        'Tamarack (lb)': (burns_t[i] if i < len(burns_t) else None),
+                        'Flatwing (lb)': (burns_f[i] if i < len(burns_f) else None)
+                    })
+                df_h = pd.DataFrame(rows)
+            elif burns_t:
+                df_h = pd.DataFrame([{'Hour': i + 1, 'Tamarack (lb)': v} for i, v in enumerate(burns_t)])
+            else:
+                df_h = pd.DataFrame([{'Hour': i + 1, 'Flatwing (lb)': v} for i, v in enumerate(burns_f)])
+
+            # Hide index for hourly fuel burn summary
+            try:
+                st.dataframe(df_h, use_container_width=True, hide_index=True)
+            except TypeError:
+                try:
+                    st.dataframe(df_h.style.hide(axis='index'), use_container_width=True)
+                except Exception:
+                    df_h = df_h.reset_index(drop=True)
+                    st.dataframe(df_h, use_container_width=True)
+        except Exception:
             st.table(pd.DataFrame(rows))
-        elif burns_t:
-            rows = [{'Hour': i + 1, 'Tamarack (lb)': v} for i, v in enumerate(burns_t)]
-            st.table(pd.DataFrame(rows))
-        else:
-            rows = [{'Hour': i + 1, 'Flatwing (lb)': v} for i, v in enumerate(burns_f)]
-            st.table(pd.DataFrame(rows))
+
+    if modes_summary_df is not None and isinstance(modes_summary_df, pd.DataFrame) and not modes_summary_df.empty:
+        st.subheader("Cruise Mode Summary")
+        try:
+            df_display = modes_summary_df.copy()
+            if 'Chosen' in df_display.columns:
+                df_display = df_display.drop(columns=['Chosen'])
+            # Make headers tighter by shortening labels (no newline wrapping)
+            col_renames = {}
+            if 'Flatwing Fuel Used (lb)' in df_display.columns:
+                col_renames['Flatwing Fuel Used (lb)'] = 'Flatwing Fuel'
+            if 'Tamarack Fuel Used (lb)' in df_display.columns:
+                col_renames['Tamarack Fuel Used (lb)'] = 'Tamarack Fuel'
+            if 'Fuel Saved (lb)' in df_display.columns:
+                col_renames['Fuel Saved (lb)'] = 'Fuel Saved (lb)'
+            if 'Fuel Saved (gal)' in df_display.columns:
+                col_renames['Fuel Saved (gal)'] = 'Fuel Saved (gal)'
+            if 'Flatwing Time (min)' in df_display.columns:
+                col_renames['Flatwing Time (min)'] = 'Flatwing Time'
+            if 'Tamarack Time (min)' in df_display.columns:
+                col_renames['Tamarack Time (min)'] = 'Tamarack Time'
+            if 'Fuel Used (lb)' in df_display.columns:
+                col_renames['Fuel Used (lb)'] = 'Fuel Used (lb)'
+            if 'Total Time (min)' in df_display.columns:
+                col_renames['Total Time (min)'] = 'Total Time (min)'
+            if col_renames:
+                df_display = df_display.rename(columns=col_renames)
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+        except TypeError:
+            df_display = modes_summary_df.copy()
+            if 'Chosen' in df_display.columns:
+                df_display = df_display.drop(columns=['Chosen'])
+            col_renames = {}
+            if 'Flatwing Fuel Used (lb)' in df_display.columns:
+                col_renames['Flatwing Fuel Used (lb)'] = 'Flatwing Fuel'
+            if 'Tamarack Fuel Used (lb)' in df_display.columns:
+                col_renames['Tamarack Fuel Used (lb)'] = 'Tamarack Fuel'
+            if 'Fuel Saved (lb)' in df_display.columns:
+                col_renames['Fuel Saved (lb)'] = 'Fuel Saved (lb)'
+            if 'Fuel Saved (gal)' in df_display.columns:
+                col_renames['Fuel Saved (gal)'] = 'Fuel Saved (gal)'
+            if 'Flatwing Time (min)' in df_display.columns:
+                col_renames['Flatwing Time (min)'] = 'Flatwing Time'
+            if 'Tamarack Time (min)' in df_display.columns:
+                col_renames['Tamarack Time (min)'] = 'Tamarack Time'
+            if 'Fuel Used (lb)' in df_display.columns:
+                col_renames['Fuel Used (lb)'] = 'Fuel Used (lb)'
+            if 'Total Time (min)' in df_display.columns:
+                col_renames['Total Time (min)'] = 'Total Time (min)'
+            if col_renames:
+                df_display = df_display.rename(columns=col_renames)
+            try:
+                st.dataframe(df_display.style.hide(axis='index'), use_container_width=True)
+            except Exception:
+                df_display = df_display.reset_index(drop=True)
+                st.dataframe(df_display, use_container_width=True)
 
     figs = plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results)
     # Add the route map to figs so it can be embedded in the PDF

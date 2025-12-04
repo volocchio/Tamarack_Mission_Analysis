@@ -346,6 +346,10 @@ def run_simulation(
     isa_dev_c: float | None = None,
     range_mode: bool = False,
     cruise_mode: str | None = None,
+    sfc_bias_low: float | int = 0.0,
+    sfc_bias_high: float | int = 0.0,
+    thrust_bias_low: float | int = 0.0,
+    thrust_bias_high: float | int = 0.0,
 ):
     """Simulate a flight between two airports.
     
@@ -368,6 +372,10 @@ def run_simulation(
         isa_dev_c: Optional ISA temperature deviation in Celsius.
         range_mode: Optional range mode (not used).
         cruise_mode: Optional cruise mode (not used).
+        sfc_bias_low: Low altitude SFC bias percentage.
+        sfc_bias_high: High altitude SFC bias percentage.
+        thrust_bias_low: Low altitude thrust bias percentage.
+        thrust_bias_high: High altitude thrust bias percentage.
 
     Returns:
         tuple: (flight_data, results, dep_lat, dep_lon, arr_lat, arr_lon, output_file_path)
@@ -722,6 +730,38 @@ def run_simulation(
     fuel_remaining_data = []
     fuel_flow_data = []  # Fuel flow in lbs per hour
 
+    # Precompute bias values as fractions (e.g., +10% -> 0.10)
+    try:
+        sfc_bias_low_frac = float(sfc_bias_low) / 100.0
+    except Exception:
+        sfc_bias_low_frac = 0.0
+    try:
+        sfc_bias_high_frac = float(sfc_bias_high) / 100.0
+    except Exception:
+        sfc_bias_high_frac = 0.0
+    try:
+        thrust_bias_low_frac = float(thrust_bias_low) / 100.0
+    except Exception:
+        thrust_bias_low_frac = 0.0
+    try:
+        thrust_bias_high_frac = float(thrust_bias_high) / 100.0
+    except Exception:
+        thrust_bias_high_frac = 0.0
+
+    # Define reference altitudes for interpolation (sea level to typical cruise ceiling)
+    bias_alt_low = 0.0
+    bias_alt_high = max(10000.0, float(cruise_alt) if cruise_alt is not None else 0.0)
+
+    def _interp_bias(alt_ft: float, low_frac: float, high_frac: float) -> float:
+        """Linearly interpolate bias fraction between low/high reference altitudes."""
+        if alt_ft <= bias_alt_low:
+            return low_frac
+        if alt_ft >= bias_alt_high:
+            return high_frac
+        span = max(1.0, bias_alt_high - bias_alt_low)
+        frac = (alt_ft - bias_alt_low) / span
+        return low_frac + frac * (high_frac - low_frac)
+
     while segment != 14:
         # Termination/guard conditions
         if range_mode:
@@ -729,10 +769,6 @@ def run_simulation(
             if mission_fuel_remain <= 0:
                 segment = 14
                 break
-        else:
-            if mission_fuel_remain < 0 and alt > alt_land:
-                final_results = {"error": f"Not Enough Fuel for {mod}."}
-                return pd.DataFrame(), final_results, dep_latitude, dep_longitude, arr_latitude, arr_longitude, ""
 
         # Reset vspeed_flag when entering segment 0, 12, or 13
         if segment in (0, 12, 13) and vspeed_flag != 0:
@@ -937,7 +973,7 @@ def run_simulation(
         wind_component = wind_speed * cos(wind_dir_rad - heading_rad)  # Positive for tailwind, negative for headwind
 
         d_alt, _, sigma, delta, _, c = atmos(alt, isa_diff)
-        _, _, drag, _, _, vktas, v_true_fps, thrust, drag_gnd, vkias, m = physics(
+        _, _, drag, _, _, vktas, v_true_fps, thrust_raw, drag_gnd, vkias, m = physics(
             t_inc,
             gamma,
             sigma,
@@ -968,6 +1004,11 @@ def run_simulation(
             mmo,
             v_true_fps,
         )
+
+        # Apply altitude-based thrust and SFC biases
+        thrust_bias_frac = _interp_bias(alt, thrust_bias_low_frac, thrust_bias_high_frac)
+        sfc_bias_frac = _interp_bias(alt, sfc_bias_low_frac, sfc_bias_high_frac)
+        thrust = thrust_raw * (1.0 + thrust_bias_frac)
 
         if segment in (0, 6, 7, 13):
             tx = 0
@@ -1101,7 +1142,9 @@ def run_simulation(
         remaining_dist = total_dist - dist_ft / 6076.12
         alt += roc_fps * t_inc
         t += t_inc
-        fuel_burned_inc = thrust * sfc * t_inc / 3600
+        # Adjust SFC with bias before computing fuel burn
+        sfc_effective = sfc * (1.0 + sfc_bias_frac)
+        fuel_burned_inc = thrust * sfc_effective * t_inc / 3600
         fuel_burned += fuel_burned_inc
         mission_fuel_remain -= fuel_burned_inc
         w -= fuel_burned_inc

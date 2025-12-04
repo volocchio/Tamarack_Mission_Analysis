@@ -407,6 +407,45 @@ with st.sidebar:
     # ISA deviation
     isa_dev = int(st.number_input("ISA Deviation (C)", value=0.0, step=1.0))
 
+    # Performance tuning biases
+    st.subheader("Performance Tuning (Biases)")
+    st.markdown("Adjust SFC and thrust vs altitude to better match specific aircraft behavior.")
+    col_bias1, col_bias2 = st.columns(2)
+    with col_bias1:
+        sfc_bias_low = st.slider(
+            "Low Alt SFC Bias (%)",
+            min_value=-20,
+            max_value=20,
+            value=0,
+            step=1,
+            help="Percent bias applied to SFC near sea level (negative = lower SFC, positive = higher SFC).",
+        )
+        thrust_bias_low = st.slider(
+            "Low Alt Thrust Bias (%)",
+            min_value=-20,
+            max_value=20,
+            value=0,
+            step=1,
+            help="Percent bias applied to thrust near sea level (negative = less thrust, positive = more thrust).",
+        )
+    with col_bias2:
+        sfc_bias_high = st.slider(
+            "High Alt SFC Bias (%)",
+            min_value=-20,
+            max_value=20,
+            value=0,
+            step=1,
+            help="Percent bias applied to SFC at high altitude cruise (negative = lower SFC, positive = higher SFC).",
+        )
+        thrust_bias_high = st.slider(
+            "High Alt Thrust Bias (%)",
+            min_value=-20,
+            max_value=20,
+            value=0,
+            step=1,
+            help="Percent bias applied to thrust at high altitude cruise (negative = less thrust, positive = more thrust).",
+        )
+
     # Cruise mode selection
     cruise_mode = st.radio(
         "Cruise Mode",
@@ -415,465 +454,196 @@ with st.sidebar:
         format_func=lambda x: {"Max Range": "Max Range speed (LRC)", "Max Endurance": "Max Endurance Speed"}.get(x, x),
         help="Above 10,000 ft: set cruise speed by objective. For MCT, hold max thrust. For Max Range/Endurance, target optimal CL/CD with V >= 1.2*Vs."
     )
+    run_all_modes = st.checkbox("Run All Modes", value=False, help="Run MCT, LRC, and Max Endurance; show detailed results for the selected mode above.")
 
     # V1 cut simulation
     v1_cut_enabled = st.checkbox("Enable V1 Cut Simulation (Single Engine)", value=False)
 
     # Output file option
     write_output_file = st.checkbox("Write Output CSV File", value=True)
+    fuel_cost_per_gal = st.number_input("Fuel Cost ($/gal)", min_value=0.0, value=5.0, step=0.1)
 
 # Main content area for outputs
 if st.button("Run Simulation"):
+    # Prepare airport/route variables used later
     try:
-        # Get the selected display names
         dep_display_name = departure_airport
         arr_display_name = arrival_airport
-        
-        # Get the airport info using case-insensitive matching
         dep_airport_info = next((display_name_to_info[name] for name in display_name_to_info 
-                               if name.upper() == dep_display_name.upper()), None)
+                           if name.upper() == dep_display_name.upper()), None)
         arr_airport_info = next((display_name_to_info[name] for name in display_name_to_info 
-                               if name.upper() == arr_display_name.upper()), None)
-        
-        if dep_airport_info is None:
-            similar = [name for name in display_name_to_info 
-                     if dep_display_name.upper() in name.upper()][:5]
-            st.error(f"Departure airport '{dep_display_name}' not found. Similar: {similar}")
-            st.stop()
-            
-        if arr_airport_info is None:
-            similar = [name for name in display_name_to_info 
-                     if arr_display_name.upper() in name.upper()][:5]
-            st.error(f"Arrival airport '{arr_display_name}' not found. Similar: {similar}")
-            st.stop()
-        
-        # Get the airport codes
-        dep_airport_code = dep_airport_info["ident"]
-        arr_airport_code = arr_airport_info["ident"]
-        
-        # Get coordinates and elevation
-        dep_lat, dep_lon, elev_dep = dep_airport_info[["latitude_deg", "longitude_deg", "elevation_ft"]]
-        arr_lat, arr_lon, elev_arr = arr_airport_info[["latitude_deg", "longitude_deg", "elevation_ft"]]
-        
-        # Calculate distance and bearing
-        distance_nm, bearing_deg = haversine_with_bearing(dep_lat, dep_lon, arr_lat, arr_lon)
-
-        # Display airport info
-        st.header("Airport Information")
-
-        # ISA-based: PA = Elevation; DA = PA + 120 * ISA deviation (C)
-        pa_dep = elev_dep
-        pa_arr = elev_arr
-        da_dep = pa_dep + 120 * isa_dev
-        da_arr = pa_arr + 120 * isa_dev
-
-        # Build compact, pre-formatted table to avoid header wrapping
-        def short_name(n: str) -> str:
-            s = str(n).title()
-            s = (s.replace("International", "Intl")
-                   .replace("Municipal", "Muni")
-                   .replace("Regional", "Rgnl")
-                   .replace("County", "Cnty")
-                   .replace("Airport", "Arpt"))
-            return (s[:28] + "…") if len(s) > 29 else s
-
-        airport_rows = [
-            {
-                "Airport": short_name(dep_airport_info["name"]),
-                "ICAO": dep_airport_code,
-                "PA (ft)": f"{int(round(pa_dep)):,}",
-                "DA (ft)": f"{int(round(da_dep)):,}",
-            },
-            {
-                "Airport": short_name(arr_airport_info["name"]),
-                "ICAO": arr_airport_code,
-                "PA (ft)": f"{int(round(pa_arr)):,}",
-                "DA (ft)": f"{int(round(da_arr)):,}",
-            },
-        ]
-
-        airport_df = pd.DataFrame(
-            airport_rows,
-            columns=[
-                "Airport",
-                "ICAO",
-                "PA (ft)",
-                "DA (ft)",
-            ],
-        )
-        # Use row labels for Type, and render a static, compact table
-        airport_df.index = ["Departure", "Arrival"]
-        airport_df.index.name = "Type"
-
-        st.table(airport_df)
-
-        st.markdown(f"Distance: {distance_nm:.1f} NM | Bearing: {bearing_deg:.1f}°")
-
-    except Exception as e:
-        st.error(f"Error calculating route: {str(e)}")
-        st.stop()
-
-    # Use user-adjusted values for simulation
-    if wing_type == "Comparison":
-        payload_f = payload_input_f
-        fuel_f = fuel_input_f
-        payload_t = payload_input_t
-        fuel_t = fuel_input_t
-    elif wing_type == "Flatwing":
-        payload_f = payload_input_f
-        fuel_f = fuel_input_f
-        payload_t = 0
-        fuel_t = 0
-    elif wing_type == "Tamarack":
-        payload_f = 0
-        fuel_f = 0
-        payload_t = payload_input_t
-        fuel_t = fuel_input_t
-
-    # Calculate current weights using user inputs
-    if wing_type == "Comparison":
-        # Flatwing weights
-        zfw_f = bow_f + payload_input_f  # Zero Fuel Weight
-        rw_f = zfw_f + fuel_input_f  # Ramp Weight
-        tow_f = rw_f - taxi_fuel_f  # Takeoff Weight (after taxiing)
-        mission_fuel_f = fuel_input_f - reserve_fuel_f - taxi_fuel_f
-        
-        # Tamarack weights - Always use values from config file
-        tamarack_config = AIRCRAFT_CONFIG.get((aircraft_model, "Tamarack"))
-        if tamarack_config:
-            tamarack_mzfw = tamarack_config[19]  # MZFW is at index 19 in the config tuple
-            tamarack_bow = tamarack_config[18]   # BOW is at index 18
-            
-            # Ensure payload doesn't exceed MZFW - BOW
-            max_payload_t = max(0, tamarack_mzfw - tamarack_bow)
-            if payload_input_t > max_payload_t:
-                payload_input_t = max_payload_t
-                # Instead of modifying session state directly, we'll use the adjusted value
-                # and let the widget update on the next render
-                
-            zfw_t = tamarack_bow + payload_input_t  # Zero Fuel Weight
-            rw_t = zfw_t + fuel_input_t  # Ramp Weight
-            tow_t = rw_t - taxi_fuel_t  # Takeoff Weight (after taxiing)
-            mission_fuel_t = fuel_input_t - reserve_fuel_t - taxi_fuel_t
+                           if name.upper() == arr_display_name.upper()), None)
+        if dep_airport_info is None or arr_airport_info is None:
+            dep_airport_code = ""
+            arr_airport_code = ""
+            dep_lat = dep_lon = arr_lat = arr_lon = 0.0
+            distance_nm = 0.0
+            bearing_deg = 0.0
         else:
-            # Fallback to Flatwing calculation if Tamarack config not found (shouldn't happen)
-            st.error("Tamarack configuration not found!")
-            zfw_t = 0
-            rw_t = 0
-            tow_t = 0
-            mission_fuel_t = 0
-
-        # Display weight status tables for Comparison mode
-        st.markdown("---")
-        st.subheader('Weight Status')
-
-        # Highlighter for exceeded limits (shared)
-        def highlight_exceeded(row):
-            weight = float(row['Weight (lb)'].replace(',', ''))
-            max_weight = row['Max Weight (lb)']
-            if max_weight and str(max_weight).strip():
-                try:
-                    max_weight_val = float(str(max_weight).replace(',', ''))
-                    if weight > max_weight_val:
-                        return ['background-color: #ffcccc'] * len(row)
-                except (ValueError, AttributeError):
-                    pass
-            return [''] * len(row)
-
-        # Flatwing table
-        max_payload_flatwing = max(0, flatwing_mzfw - bow_f)
-        weight_df_f = pd.DataFrame({
-            'Component': [
-                'BOW', 'Payload', 'Initial Fuel', 'Reserve Fuel', 'Taxi Fuel',
-                'Mission Fuel', 'ZFW', 'Ramp Weight', 'Takeoff Weight'
-            ],
-            'Weight (lb)': [
-                f"{bow_f:,.0f}",
-                f"{payload_input_f:,.0f}",
-                f"{fuel_input_f:,.0f}",
-                f"{reserve_fuel_f:,.0f}",
-                f"{taxi_fuel_f:,.0f}",
-                f"{mission_fuel_f:,.0f}",
-                f"{zfw_f:,.0f}",
-                f"{rw_f:,.0f}",
-                f"{tow_f:,.0f}"
-            ],
-            'Max Weight (lb)': [
-                "",  # BOW - no max
-                f"{max_payload_flatwing:,.0f}",  # Payload has max
-                f"{max_fuel:,.0f}",  # Initial Fuel has max (Flatwing config)
-                "",  # Reserve Fuel - no max
-                "",  # Taxi Fuel - no max
-                "",  # Mission Fuel - no max
-                f"{flatwing_mzfw:,.0f}",  # ZFW has max (Flatwing)
-                f"{mrw:,.0f}",  # Ramp Weight has max (Flatwing)
-                f"{mtow:,.0f}"  # Takeoff Weight has max (Flatwing)
-            ]
-        })
-        styled_df_f = weight_df_f.style.apply(highlight_exceeded, axis=1)
-
-        # Tamarack table
-        if tamarack_config:
-            tamarack_mrw = tamarack_config[20]
-            tamarack_mtow = tamarack_config[21]
-            tamarack_max_fuel = tamarack_config[22]
-            max_payload_tamarack = max(0, tamarack_mzfw - tamarack_bow)
-
-            weight_df_t = pd.DataFrame({
-                'Component': [
-                    'BOW', 'Payload', 'Initial Fuel', 'Reserve Fuel', 'Taxi Fuel',
-                    'Mission Fuel', 'ZFW', 'Ramp Weight', 'Takeoff Weight'
-                ],
-                'Weight (lb)': [
-                    f"{tamarack_bow:,.0f}",
-                    f"{payload_input_t:,.0f}",
-                    f"{fuel_input_t:,.0f}",
-                    f"{reserve_fuel_t:,.0f}",
-                    f"{taxi_fuel_t:,.0f}",
-                    f"{mission_fuel_t:,.0f}",
-                    f"{zfw_t:,.0f}",
-                    f"{rw_t:,.0f}",
-                    f"{tow_t:,.0f}"
-                ],
-                'Max Weight (lb)': [
-                    "",  # BOW - no max
-                    f"{max_payload_tamarack:,.0f}",  # Payload has max
-                    f"{tamarack_max_fuel:,.0f}",  # Initial Fuel has max (Tamarack config)
-                    "",  # Reserve Fuel - no max
-                    "",  # Taxi Fuel - no max
-                    "",  # Mission Fuel - no max
-                    f"{tamarack_mzfw:,.0f}",  # ZFW has max (Tamarack)
-                    f"{tamarack_mrw:,.0f}",  # Ramp Weight has max (Tamarack)
-                    f"{tamarack_mtow:,.0f}"  # Takeoff Weight has max (Tamarack)
-                ]
-            })
-            styled_df_t = weight_df_t.style.apply(highlight_exceeded, axis=1)
-        else:
-            weight_df_t = pd.DataFrame()
-            styled_df_t = weight_df_t
-
-        # Show side-by-side tables
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("**Flatwing**")
-            st.table(styled_df_f)
-        with col_b:
-            if not weight_df_t.empty:
-                st.markdown("**Tamarack**")
-                st.table(styled_df_t)
-
-        # Exceeded checks for both
-        def is_weight_exceeded(row):
-            try:
-                weight = float(row['Weight (lb)'].replace(',', ''))
-                max_weight = row['Max Weight (lb)']
-                if max_weight and str(max_weight).strip():
-                    max_weight_val = float(str(max_weight).replace(',', ''))
-                    return weight > max_weight_val
-                return False
-            except (ValueError, AttributeError):
-                return False
-
-        exceeded_f = weight_df_f.apply(is_weight_exceeded, axis=1).any()
-        exceeded_t = weight_df_t.apply(is_weight_exceeded, axis=1).any() if not weight_df_t.empty else False
-
-        if exceeded_f or exceeded_t:
-            st.error("Weight limits exceeded! Please adjust the following:")
-            if exceeded_f:
-                for _, row in weight_df_f.iterrows():
-                    try:
-                        weight = float(row['Weight (lb)'].replace(',', ''))
-                        max_weight = float(row['Max Weight (lb)'].replace(',', '')) if row['Max Weight (lb)'] else None
-                    except (ValueError, AttributeError):
-                        max_weight = None
-                    if max_weight is not None and weight > max_weight:
-                        excess_amount = weight - max_weight
-                        st.error(f"- Flatwing {row['Component']}: Current {row['Weight (lb)']} lbs exceeds max {row['Max Weight (lb)']} lbs by {excess_amount:,.0f} lbs")
-            if exceeded_t:
-                for _, row in weight_df_t.iterrows():
-                    try:
-                        weight = float(row['Weight (lb)'].replace(',', ''))
-                        max_weight = float(row['Max Weight (lb)'].replace(',', '')) if row['Max Weight (lb)'] else None
-                    except (ValueError, AttributeError):
-                        max_weight = None
-                    if max_weight is not None and weight > max_weight:
-                        excess_amount = weight - max_weight
-                        st.error(f"- Tamarack {row['Component']}: Current {row['Weight (lb)']} lbs exceeds max {row['Max Weight (lb)']} lbs by {excess_amount:,.0f} lbs")
-            st.stop()
-    elif wing_type == "Tamarack":
-        # Set Flatwing weights to 0 for comparison
-        zfw_f = 0
-        rw_f = 0
-        tow_f = 0
-        mission_fuel_f = 0
-        
-        tamarack_config = AIRCRAFT_CONFIG.get((aircraft_model, "Tamarack"))
-        if tamarack_config:
-            tamarack_mzfw = tamarack_config[19]  # MZFW is at index 19 in the config tuple
-            tamarack_bow = tamarack_config[18]   # BOW is at index 18
-            
-            # Ensure payload doesn't exceed MZFW - BOW
-            max_payload_t = max(0, tamarack_mzfw - tamarack_bow)
-            if payload_input_t > max_payload_t:
-                payload_input_t = max_payload_t
-                # Instead of modifying session state directly, we'll use the adjusted value
-                # and let the widget update on the next render
-                
-            zfw_t = tamarack_bow + payload_input_t  # Zero Fuel Weight
-            rw_t = zfw_t + fuel_input_t  # Ramp Weight
-            tow_t = rw_t - taxi_fuel_t  # Takeoff Weight (after taxiing)
-            mission_fuel_t = fuel_input_t - reserve_fuel_t - taxi_fuel_t
-        else:
-            st.error("Tamarack configuration not found!")
-            zfw_t = 0
-            rw_t = 0
-            tow_t = 0
-            mission_fuel_t = 0
-    else:
-        # For single configuration mode
-        config = AIRCRAFT_CONFIG.get((aircraft_model, wing_type))
-        if not config:
-            st.error(f"No configuration found for {aircraft_model} with {wing_type} modification.")
-            st.stop()
-        
-        try:
-            # Unpack the first 35 values from the config tuple
-            config_values = list(config)[:35]
-            s, b, e, h, sweep_25c, sfc, engines_orig, thrust_mult, ceiling, CL0, CLA, cdo, dcdo_flap1, dcdo_flap2, \
-                dcdo_flap3, dcdo_gear, mu_to, mu_lnd, bow, mzfw, mrw, mtow, max_fuel, \
-                taxi_fuel_default, reserve_fuel_default, mmo, VMO, clmax, clmax_1, clmax_2, m_climb, \
-                v_climb, roc_min, m_descent, v_descent = config_values
-            
-            max_payload = mzfw - bow
-        except ValueError as e:
-            st.error(f"Error extracting configuration values: {str(e)}")
-            st.stop()
-
-        if wing_type == "Flatwing":
-            payload = payload_input_f
-            fuel = fuel_input_f
-            taxi_fuel = taxi_fuel_f
-            reserve_fuel = reserve_fuel_f
-            mission_fuel = fuel_input_f - reserve_fuel_f - taxi_fuel_f
-            zfw = bow_f + payload_input_f  # Zero Fuel Weight
-            rw = zfw + fuel_input_f  # Ramp Weight
-            tow = rw - taxi_fuel_f  # Takeoff Weight (after taxiing)
-            bow = bow_f  # Use the input BOW value
-        else:  # Tamarack
-            payload = payload_input_t
-            fuel = fuel_input_t
-            taxi_fuel = taxi_fuel_t
-            reserve_fuel = reserve_fuel_t
-            mission_fuel = fuel_input_t - reserve_fuel_t - taxi_fuel_t
-            zfw = bow_t + payload_input_t  # Zero Fuel Weight
-            rw = zfw + fuel_input_t  # Ramp Weight
-            tow = rw - taxi_fuel_t  # Takeoff Weight (after taxiing)
-            bow = bow_t  # Use the input BOW value
-
-        weight_df = pd.DataFrame({
-            'Component': [
-                'BOW', 'Payload', 'Initial Fuel', 'Reserve Fuel', 'Taxi Fuel', 
-                'Mission Fuel', 'ZFW', 'Ramp Weight', 'Takeoff Weight'
-            ],
-            'Weight (lb)': [
-                f"{bow:,.0f}",
-                f"{payload:,.0f}",
-                f"{fuel:,.0f}",
-                f"{reserve_fuel:,.0f}",
-                f"{taxi_fuel:,.0f}",
-                f"{mission_fuel:,.0f}",
-                f"{zfw:,.0f}",
-                f"{rw:,.0f}",
-                f"{tow:,.0f}"
-            ],
-            'Max Weight (lb)': [
-                "",  # BOW - no max
-                f"{max_payload:,.0f}",  # Payload has max
-                f"{max_fuel:,.0f}",  # Initial Fuel has max
-                "",  # Reserve Fuel - no max
-                "",  # Taxi Fuel - no max
-                "",  # Mission Fuel - no max
-                f"{mzfw:,.0f}",  # ZFW has max
-                f"{mrw:,.0f}",  # Ramp Weight has max
-                f"{mtow:,.0f}"  # Takeoff Weight has max
-            ]
-        })
-
-        # Display weight status table before simulation
-        st.markdown("---")
-        st.subheader('Weight Status')
-        def highlight_exceeded(row):
-            weight = float(row['Weight (lb)'].replace(',', ''))
-            max_weight = row['Max Weight (lb)']
-            if max_weight and max_weight.strip():  # Only compare if max_weight is not empty
-                try:
-                    max_weight_val = float(max_weight.replace(',', ''))
-                    if weight > max_weight_val:
-                        return ['background-color: #ffcccc'] * len(row)
-                except (ValueError, AttributeError):
-                    pass
-            return [''] * len(row)
-
-        styled_df = weight_df.style.apply(highlight_exceeded, axis=1)
-        st.table(styled_df)
-        
-        # Check for any exceeded weight limits
-        def is_weight_exceeded(row):
-            try:
-                weight = float(row['Weight (lb)'].replace(',', ''))
-                max_weight = row['Max Weight (lb)']
-                if max_weight and max_weight.strip():
-                    max_weight_val = float(max_weight.replace(',', ''))
-                    return weight > max_weight_val
-                return False
-            except (ValueError, AttributeError):
-                return False
-        
-        weight_exceeded = weight_df.apply(is_weight_exceeded, axis=1).any()
-        
-        if weight_exceeded:
-            st.error("Weight limits exceeded! Please adjust the following:")
-            for _, row in weight_df.iterrows():
-                weight = float(row['Weight (lb)'].replace(',', ''))
-                max_weight = float(row['Max Weight (lb)'].replace(',', ''))
-                if weight > max_weight:
-                    excess_amount = weight - max_weight
-                    st.error(f"- {row['Component']}: Current {row['Weight (lb)']} lbs exceeds max {row['Max Weight (lb)']} lbs by {excess_amount:,.0f} lbs")
-            st.stop()
+            dep_airport_code = dep_airport_info["ident"]
+            arr_airport_code = arr_airport_info["ident"]
+            dep_lat, dep_lon, elev_dep = dep_airport_info[["latitude_deg", "longitude_deg", "elevation_ft"]]
+            arr_lat, arr_lon, elev_arr = arr_airport_info[["latitude_deg", "longitude_deg", "elevation_ft"]]
+            distance_nm, bearing_deg = haversine_with_bearing(dep_lat, dep_lon, arr_lat, arr_lon)
+    except Exception:
+        dep_airport_code = ""
+        arr_airport_code = ""
+        dep_lat = dep_lon = arr_lat = arr_lon = 0.0
+        distance_nm = 0.0
+        bearing_deg = 0.0
 
     # Run simulation only if weights are valid
     tamarack_data = pd.DataFrame()
     tamarack_results = {}
     flatwing_data = pd.DataFrame()
     flatwing_results = {}
+    modes_summary_df = None
 
+    # Selected mode for detailed results
+    chosen_mode = cruise_mode
+
+    # Prepare per-wing inputs used by simulations
     if wing_type == "Comparison":
-        if "Tamarack" in mods_available:
+        payload_f = payload_input_f
+        fuel_f = fuel_input_f
+        payload_t = payload_input_t
+        fuel_t = fuel_input_t
+    elif wing_type == "Flatwing":
+        payload_f = payload_input_f
+        fuel_f = fuel_input_f
+    elif wing_type == "Tamarack":
+        payload_t = payload_input_t
+        fuel_t = fuel_input_t
+
+    if run_all_modes:
+        modes_to_run = ["MCT (Max Thrust)", "Max Range", "Max Endurance"]
+        # Preserve order but put chosen mode first for summary display
+        ordered_modes = [m for m in modes_to_run if m == chosen_mode] + [m for m in modes_to_run if m != chosen_mode]
+        results_by_mode = {}
+
+        for mode in modes_to_run:
+            res = {}
+            if wing_type == "Comparison":
+                if "Tamarack" in mods_available:
+                    t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
+                        dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
+                        payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                        winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
+                        sfc_bias_low=sfc_bias_low, sfc_bias_high=sfc_bias_high,
+                        thrust_bias_low=thrust_bias_low, thrust_bias_high=thrust_bias_high)
+                    res["Tamarack"] = (t_data, t_results, t_out)
+                if "Flatwing" in mods_available:
+                    f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
+                        dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
+                        payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                        winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
+                        sfc_bias_low=sfc_bias_low, sfc_bias_high=sfc_bias_high,
+                        thrust_bias_low=thrust_bias_low, thrust_bias_high=thrust_bias_high)
+                    res["Flatwing"] = (f_data, f_results, f_out)
+            elif wing_type == "Tamarack":
+                t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
+                    dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
+                    payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                    winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
+                    sfc_bias_low=sfc_bias_low, sfc_bias_high=sfc_bias_high,
+                    thrust_bias_low=thrust_bias_low, thrust_bias_high=thrust_bias_high)
+                res["Tamarack"] = (t_data, t_results, t_out)
+            elif wing_type == "Flatwing":
+                f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
+                    dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
+                    payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                    winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
+                    sfc_bias_low=sfc_bias_low, sfc_bias_high=sfc_bias_high,
+                    thrust_bias_low=thrust_bias_low, thrust_bias_high=thrust_bias_high)
+                res["Flatwing"] = (f_data, f_results, f_out)
+            results_by_mode[mode] = res
+
+        rows = []
+        def mode_short(m: str) -> str:
+            return {"MCT (Max Thrust)": "MCT", "Max Range": "LRC", "Max Endurance": "Max End"}.get(m, m)
+        if wing_type == "Comparison":
+            for m in ordered_modes:
+                t_res = results_by_mode.get(m, {}).get("Tamarack", (pd.DataFrame(), {}, ""))[1]
+                f_res = results_by_mode.get(m, {}).get("Flatwing", (pd.DataFrame(), {}, ""))[1]
+                t_burn = float(t_res.get("Total Fuel Burned (lb)", 0) or 0)
+                f_burn = float(f_res.get("Total Fuel Burned (lb)", 0) or 0)
+                t_time = float(t_res.get("Total Time (min)", 0) or 0)
+                f_time = float(f_res.get("Total Time (min)", 0) or 0)
+                lb_per_gal = 6.7
+                savings_lb = f_burn - t_burn
+                savings_gal = savings_lb / lb_per_gal if lb_per_gal > 0 else 0.0
+                rows.append({
+                    "Mode": mode_short(m),
+                    "Chosen": (m == chosen_mode),
+                    "Flatwing Fuel Used (lb)": f"{f_burn:,.0f}",
+                    "Tamarack Fuel Used (lb)": f"{t_burn:,.0f}",
+                    "Fuel Saved (lb)": f"{savings_lb:,.0f}",
+                    "Fuel Saved (gal)": f"{savings_gal:,.1f}",
+                    "Flatwing Time (min)": f"{f_time:,.0f}",
+                    "Tamarack Time (min)": f"{t_time:,.0f}"
+                })
+        else:
+            key = "Flatwing" if wing_type == "Flatwing" else "Tamarack"
+            for m in ordered_modes:
+                r = results_by_mode.get(m, {}).get(key, (pd.DataFrame(), {}, ""))[1]
+                burn = float(r.get("Total Fuel Burned (lb)", 0) or 0)
+                time_min = float(r.get("Total Time (min)", 0) or 0)
+                rows.append({
+                    "Mode": mode_short(m),
+                    "Chosen": (m == chosen_mode),
+                    "Fuel Used (lb)": f"{burn:,.0f}",
+                    "Total Time (min)": f"{time_min:,.0f}"
+                })
+        try:
+            modes_summary_df = pd.DataFrame(rows)
+        except Exception:
+            modes_summary_df = None
+
+        chosen = results_by_mode.get(chosen_mode, {})
+        if "Tamarack" in chosen:
+            tamarack_data, tamarack_results, tamarack_output_file = chosen["Tamarack"]
+        else:
+            tamarack_data, tamarack_results, tamarack_output_file = pd.DataFrame(), {}, ""
+        if "Flatwing" in chosen:
+            flatwing_data, flatwing_results, flatwing_output_file = chosen["Flatwing"]
+        else:
+            flatwing_data, flatwing_results, flatwing_output_file = pd.DataFrame(), {}, ""
+
+    else:
+        if wing_type == "Comparison":
+            if "Tamarack" in mods_available:
+                tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
+                    dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
+                    payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                    winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
+                    sfc_bias_low=sfc_bias_low, sfc_bias_high=sfc_bias_high,
+                    thrust_bias_low=thrust_bias_low, thrust_bias_high=thrust_bias_high)
+            if "Flatwing" in mods_available:
+                flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
+                    dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
+                    payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                    winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
+                    sfc_bias_low=sfc_bias_low, sfc_bias_high=sfc_bias_high,
+                    thrust_bias_low=thrust_bias_low, thrust_bias_high=thrust_bias_high)
+        elif wing_type == "Tamarack":
             tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
                 dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
                 payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-                winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode)
-        if "Flatwing" in mods_available:
+                winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
+                sfc_bias_low=sfc_bias_low, sfc_bias_high=sfc_bias_high,
+                thrust_bias_low=thrust_bias_low, thrust_bias_high=thrust_bias_high)
+        elif wing_type == "Flatwing":
             flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
                 dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
                 payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-                winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode)
-    elif wing_type == "Tamarack":
-        tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
-            dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-            payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-            winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode)
-    elif wing_type == "Flatwing":
-        flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
-            dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-            payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-            winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode)
+                winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
+                sfc_bias_low=sfc_bias_low, sfc_bias_high=sfc_bias_high,
+                thrust_bias_low=thrust_bias_low, thrust_bias_high=thrust_bias_high)
 
     if v1_cut_enabled:
         if not tamarack_data.empty:
             end_idx = tamarack_data[tamarack_data['Segment'] == 3].index[-1] if not tamarack_data[tamarack_data['Segment'] == 3].empty else 0
 
-    # Display simulation results (for all wing types)
     st.markdown("---")
     st.header('Simulation Results')
     # Determine output folder for report (same as CSV)
@@ -898,7 +668,9 @@ if st.button("Run Simulation"):
         report_output_dir=report_output_dir,
         weight_df_flatwing=(weight_df_f if 'weight_df_f' in locals() else None),
         weight_df_tamarack=(weight_df_t if 'weight_df_t' in locals() else None),
-        weight_df_single=(weight_df if 'weight_df' in locals() else None)
+        weight_df_single=(weight_df if 'weight_df' in locals() else None),
+        modes_summary_df=(modes_summary_df if 'modes_summary_df' in locals() else None),
+        fuel_cost_per_gal=fuel_cost_per_gal
     )
     
     # Display output file information (for all wing types)
