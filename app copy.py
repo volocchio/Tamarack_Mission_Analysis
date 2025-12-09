@@ -139,7 +139,7 @@ with st.sidebar:
         "Arrival Airport",
         options=airport_display_names,
         index=next((i for i, name in enumerate(airport_display_names) 
-                  if name.startswith("KSJT")), 0),
+                  if name.startswith("KSAN")), 0),
         format_func=lambda x: x,
         key="arrival_airport"
     )
@@ -469,11 +469,11 @@ with st.sidebar:
             st.markdown("**Flatwing Auto Inputs**")
             real_t_climb_min_f = st.number_input("Time to Climb (min)", min_value=0.0, value=30.0, step=0.5, key="real_t_climb_min_f")
             real_fuel_toc_lb_f = st.number_input("Fuel to TOC (lb)", min_value=0.0, value=600.0, step=10.0, key="real_fuel_toc_lb_f")
-            real_cruise_pph_f = st.number_input("Cruise Fuel Burn (lb/hr)", min_value=0.0, value=700.0, step=10.0, key="real_cruise_pph_f")
+            real_cruise_pph_f = st.number_input("Cruise Fuel Burn (lb/hr)", min_value=0.0, value=650.0, step=10.0, key="real_cruise_pph_f")
             init_cruise_alt_ft_f = st.number_input("Initial Cruise Altitude (ft)", min_value=0, max_value=int(ceiling), value=min(int(ceiling), 35000), step=1000, key="init_cruise_alt_ft_f")
         with col_auto_tam:
             st.markdown("**Tamarack Auto Inputs**")
-            real_t_climb_min_t = st.number_input("Time to Climb (min)", min_value=0.0, value=30.0, step=0.5, key="real_t_climb_min_t")
+            real_t_climb_min_t = st.number_input("Time to Climb (min)", min_value=0.0, value=25.0, step=0.5, key="real_t_climb_min_t")
             real_fuel_toc_lb_t = st.number_input("Fuel to TOC (lb)", min_value=0.0, value=550.0, step=10.0, key="real_fuel_toc_lb_t")
             real_cruise_pph_t = st.number_input("Cruise Fuel Burn (lb/hr)", min_value=0.0, value=600.0, step=10.0, key="real_cruise_pph_t")
             init_cruise_alt_ft_t = st.number_input("Initial Cruise Altitude (ft)", min_value=0, max_value=int(ceiling), value=min(int(ceiling), 41000), step=1000, key="init_cruise_alt_ft_t")
@@ -501,33 +501,23 @@ with st.sidebar:
         tam_thrust_mid = -int(scale_t // 2)
         tam_thrust_high = -int(scale_t)
 
-    if bias_mode == "Auto":
-        applied = st.session_state.get('applied_biases', {})
-        tam_applied = applied.get('Tamarack', {
-            'sfc_low': tam_sfc_low, 'sfc_mid': tam_sfc_mid, 'sfc_high': tam_sfc_high,
-            'thrust_low': tam_thrust_low, 'thrust_mid': tam_thrust_mid, 'thrust_high': tam_thrust_high,
-        })
-        flat_applied = applied.get('Flatwing', {
-            'sfc_low': flat_sfc_low, 'sfc_mid': flat_sfc_mid, 'sfc_high': flat_sfc_high,
-            'thrust_low': flat_thrust_low, 'thrust_mid': flat_thrust_mid, 'thrust_high': flat_thrust_high,
-        })
-        col_bias_left, col_bias_right = st.columns(2)
-        with col_bias_left:
-            st.markdown("**Tamarack Biases (Applied)**")
-            st.write(f"SFC Low (%): {tam_applied['sfc_low']}")
-            st.write(f"SFC Mid (%): {tam_applied['sfc_mid']}")
-            st.write(f"SFC High (%): {tam_applied['sfc_high']}")
-            st.write(f"Thrust Low (%): {tam_applied['thrust_low']}")
-            st.write(f"Thrust Mid (%): {tam_applied['thrust_mid']}")
-            st.write(f"Thrust High (%): {tam_applied['thrust_high']}")
-        with col_bias_right:
-            st.markdown("**Flatwing Biases (Applied)**")
-            st.write(f"SFC Low (%): {flat_applied['sfc_low']}")
-            st.write(f"SFC Mid (%): {flat_applied['sfc_mid']}")
-            st.write(f"SFC High (%): {flat_applied['sfc_high']}")
-            st.write(f"Thrust Low (%): {flat_applied['thrust_low']}")
-            st.write(f"Thrust Mid (%): {flat_applied['thrust_mid']}")
-            st.write(f"Thrust High (%): {flat_applied['thrust_high']}")
+    col_bias_left, col_bias_right = st.columns(2)
+    with col_bias_left:
+        st.markdown("**Tamarack Biases (Applied)**")
+        st.write(f"SFC Low (%): {tam_sfc_low}")
+        st.write(f"SFC Mid (%): {tam_sfc_mid}")
+        st.write(f"SFC High (%): {tam_sfc_high}")
+        st.write(f"Thrust Low (%): {tam_thrust_low}")
+        st.write(f"Thrust Mid (%): {tam_thrust_mid}")
+        st.write(f"Thrust High (%): {tam_thrust_high}")
+    with col_bias_right:
+        st.markdown("**Flatwing Biases (Applied)**")
+        st.write(f"SFC Low (%): {flat_sfc_low}")
+        st.write(f"SFC Mid (%): {flat_sfc_mid}")
+        st.write(f"SFC High (%): {flat_sfc_high}")
+        st.write(f"Thrust Low (%): {flat_thrust_low}")
+        st.write(f"Thrust Mid (%): {flat_thrust_mid}")
+        st.write(f"Thrust High (%): {flat_thrust_high}")
 
     # Cruise mode selection
     cruise_mode = st.radio(
@@ -549,11 +539,6 @@ fuel_cost_per_gal = st.number_input("Fuel Cost ($/gal)", min_value=0.0, value=5.
 # Require explicit Run to execute the simulation
 st.markdown("---")
 run_clicked = st.button("Run Simulation", type="primary")
-if run_clicked:
-    try:
-        del st.session_state['last_run']
-    except Exception:
-        pass
 if not run_clicked and 'last_run' not in st.session_state:
     st.info("Adjust parameters, then click 'Run Simulation' to execute.")
     st.stop()
@@ -603,67 +588,40 @@ if not run_clicked and 'last_run' in st.session_state:
         pass
     st.stop()
 if bias_mode == "Auto":
-    try:
-        if wing_type in ("Comparison", "Tamarack") and "Tamarack" in mods_available:
-            for _ in range(2):
-                _t_data, _t_res, *_ = run_simulation(
-                    dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-                    payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-                    winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
-                    sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
-                    thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
-                    bias_alt_mid=bias_alt_mid_ft)
-                _sim = float(_t_res.get("Climb Time (min)", 0) or 0)
-                _tgt = float(real_t_climb_min_t)
-                if _tgt <= 0 or _sim <= 0:
-                    break
-                _ratio = (_sim - _tgt) / _tgt
-                _delta = int(max(-15, min(15, round(_ratio * 40))))
-                if _delta == 0:
-                    break
-                tam_thrust_low = int(max(-20, min(20, tam_thrust_low + _delta)))
-                tam_thrust_mid = int(max(-20, min(20, tam_thrust_mid + _delta)))
-                tam_thrust_high = int(max(-20, min(20, tam_thrust_high + _delta)))
-                if abs(_sim - _tgt) <= 1.0:
-                    break
-
-        if wing_type in ("Comparison", "Flatwing") and "Flatwing" in mods_available:
-            for _ in range(2):
-                _f_data, _f_res, *_ = run_simulation(
-                    dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                    payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-                    winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
-                    sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
-                    thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
-                    bias_alt_mid=bias_alt_mid_ft)
-                _sim = float(_f_res.get("Climb Time (min)", 0) or 0)
-                _tgt = float(real_t_climb_min_f)
-                if _tgt <= 0 or _sim <= 0:
-                    break
-                _ratio = (_sim - _tgt) / _tgt
-                _delta = int(max(-15, min(15, round(_ratio * 40))))
-                if _delta == 0:
-                    break
-                flat_thrust_low = int(max(-20, min(20, flat_thrust_low + _delta)))
-                flat_thrust_mid = int(max(-20, min(20, flat_thrust_mid + _delta)))
-                flat_thrust_high = int(max(-20, min(20, flat_thrust_high + _delta)))
-                if abs(_sim - _tgt) <= 1.0:
-                    break
-    except Exception:
-        pass
-    try:
-        st.session_state['applied_biases'] = {
-            'Tamarack': {
-                'sfc_low': tam_sfc_low, 'sfc_mid': tam_sfc_mid, 'sfc_high': tam_sfc_high,
-                'thrust_low': tam_thrust_low, 'thrust_mid': tam_thrust_mid, 'thrust_high': tam_thrust_high,
-            },
-            'Flatwing': {
-                'sfc_low': flat_sfc_low, 'sfc_mid': flat_sfc_mid, 'sfc_high': flat_sfc_high,
-                'thrust_low': flat_thrust_low, 'thrust_mid': flat_thrust_mid, 'thrust_high': flat_thrust_high,
-            },
-        }
-    except Exception:
-        pass
+     try:
+         if wing_type in ("Comparison", "Tamarack") and "Tamarack" in mods_available:
+             _t_data, _t_res, *_ = run_simulation(
+                 dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
+                 payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                 winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
+                 sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
+                 thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
+                 bias_alt_mid=bias_alt_mid_ft)
+             _sim = float(_t_res.get("Climb Time (min)", 0) or 0)
+             _tgt = float(real_t_climb_min_t)
+             if _tgt > 0 and _sim > 0:
+                 _ratio = (_sim - _tgt) / _tgt
+                 _delta = int(max(-12, min(12, round(_ratio * 30))))
+                 tam_thrust_low = int(max(-20, min(20, tam_thrust_low + _delta)))
+                 tam_thrust_mid = int(max(-20, min(20, tam_thrust_mid + _delta)))
+         
+         if wing_type in ("Comparison", "Flatwing") and "Flatwing" in mods_available:
+             _f_data, _f_res, *_ = run_simulation(
+                 dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
+                 payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                 winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
+                 sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
+                 thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
+                 bias_alt_mid=bias_alt_mid_ft)
+             _sim = float(_f_res.get("Climb Time (min)", 0) or 0)
+             _tgt = float(real_t_climb_min_f)
+             if _tgt > 0 and _sim > 0:
+                 _ratio = (_sim - _tgt) / _tgt
+                 _delta = int(max(-12, min(12, round(_ratio * 30))))
+                 flat_thrust_low = int(max(-20, min(20, flat_thrust_low + _delta)))
+                 flat_thrust_mid = int(max(-20, min(20, flat_thrust_mid + _delta)))
+     except Exception:
+         pass
 
 chosen_mode = cruise_mode
 if run_all_modes:

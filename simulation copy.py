@@ -353,8 +353,6 @@ def run_simulation(
     sfc_bias_mid: float | int | None = None,
     thrust_bias_mid: float | int | None = None,
     bias_alt_mid: float | int | None = None,
-    drag_cdo_delta_pct: float | int = 0.0,
-    drag_k_delta_pct: float | int = 0.0,
 ):
     """Simulate a flight between two airports.
     
@@ -545,14 +543,6 @@ def run_simulation(
     v_u_10k = 200
     a = b ** 2 / s * (1 + 1.9 * h / b)
     k = 1 / (3.14159 * e * a)
-    try:
-        cdo = float(cdo) * (1.0 + float(drag_cdo_delta_pct) / 100.0)
-    except Exception:
-        pass
-    try:
-        k = float(k) * (1.0 + float(drag_k_delta_pct) / 100.0)
-    except Exception:
-        pass
     max_payload = mzfw - bow
     
     # Check constraints and collect all exceedance messages
@@ -1425,22 +1415,6 @@ def run_simulation(
         "V1 Cut": v1_cut_enabled,
         "First Level-Off Alt (ft)": int(first_level_off_alt) if first_level_off_alt is not None else None,
     })
-
-    try:
-        if landing_fuel_remaining < float(reserve_fuel):
-            try:
-                req = int(round(float(reserve_fuel)))
-            except Exception:
-                req = reserve_fuel
-            try:
-                act = int(round(float(landing_fuel_remaining)))
-            except Exception:
-                act = landing_fuel_remaining
-            exceedances.append(f"{mod}: Not enough reserve fuel at landing. Required {req} lb, actual {act} lb.")
-    except Exception:
-        pass
-    if exceedances:
-        final_results["exceedances"] = exceedances
 
     # If V1 cut was enabled, skip landing calculations
     if v1_cut == 0:

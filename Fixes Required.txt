@@ -3,3 +3,9 @@
  -the total distances are off, which means there is some trig problems with or without wind
 -we need to write a nice PDF output of the results if the user wants it. just like the UI output, almost like a screen copy,  i tried this once and it was really bad.  the plots wouldnt show up and it never got fixed.  please take a effective approach so that we are not in an endless loop.  
 -better search for airports
+- ROC min is 300 but the code says 400
+-allow for cruise climb once level
+-introduce max range, and max endurance settings, so after the climb to altitude, the speed is set to get the proper CL over CD relationship, an that is maintianed throughtout the cruise segment of flight, with the minimum set at 1.2 of the on condition stalling speed.  the UI should ask, MCT for max thrust, Max Range, or Max endurance.
+Done target altitude on range vs altitude, legend should say target altitude
+ DONE i would like a summary table for the single-run mode, that displays the fuel burn in lbs, for each hour of the mission.  like Tamarack burned 700 pph for the first, then 643 the second etc.  then same for the flatwing.  this should be the last section of the UI output.
+DONE in the payload-range output plots to the folder, in the title put "FL410 Goal" instead of FL410, to acknowledge that the aircraft may not be able to get there
