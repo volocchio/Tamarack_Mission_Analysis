@@ -135,21 +135,14 @@ with st.sidebar:
         default_plots = [payload_curve_label, "Max Range vs Altitude", "Max Endurance vs Altitude"]
         plots_key = "plots_mct"
     else:
-        # Optimized modes: hide Mach-based plots entirely and only show the relevant altitude plot
-        if cruise_mode == "Max Endurance":
-            plot_options = [
-                payload_curve_label,
-                "Max Endurance vs Altitude",
-            ]
-            default_plots = [payload_curve_label, "Max Endurance vs Altitude"]
-            plots_key = "plots_endurance"
-        else:
-            plot_options = [
-                payload_curve_label,
-                "Max Range vs Altitude",
-            ]
-            default_plots = [payload_curve_label, "Max Range vs Altitude"]
-            plots_key = "plots_range"
+        # Optimized modes: hide Mach-based plots but include both altitude plots
+        plot_options = [
+            payload_curve_label,
+            "Max Range vs Altitude",
+            "Max Endurance vs Altitude",
+        ]
+        default_plots = [payload_curve_label, "Max Range vs Altitude", "Max Endurance vs Altitude"]
+        plots_key = "plots_optimized"
     plot_choices = st.multiselect("Select plots", options=plot_options, default=default_plots, key=plots_key)
     save_summary_plots_ui = st.checkbox(
         "Save summary plots (PNG)", value=_kaleido_available,
@@ -446,6 +439,14 @@ if summary_df is not None and len(summary_df) > 0:
                                 line=dict(color=color_map.get(mod, None), dash=dash_for.get(int(dev), "solid"), width=2.5),
                                 marker=dict(symbol=marker_for.get(int(dev), "circle"), size=6)
                             ))
+                            if len(x_plot) > 0:
+                                fig.add_trace(go.Scatter(
+                                    x=[0, float(x_plot[0])],
+                                    y=[float(y_vals[0]), float(y_vals[0])],
+                                    mode="lines",
+                                    line=dict(color=color_map.get(mod, None), width=2.0),
+                                    showlegend=False
+                                ))
                 fig.update_layout(
                     title=f"{title_base} at FL{int(sel_alt/100):.0f}{title_suffix}",
                     xaxis_title=x_axis_label,
@@ -457,6 +458,7 @@ if summary_df is not None and len(summary_df) > 0:
                 )
                 if x_axis_label.startswith("Range"):
                     fig.update_xaxes(tickformat=",.0f")
+                fig.update_xaxes(rangemode="tozero")
                 # Always show payload as integer pounds
                 fig.update_yaxes(tickformat=",.0f")
                 # Clean hover labels to integers for both axes when plotting Range vs Payload
@@ -571,11 +573,8 @@ if summary_df is not None and len(summary_df) > 0:
 
     # Max Range vs Altitude (payload = 0)
     if "Max Range vs Altitude" in plot_choices:
-        # Dynamic subheader: if optimizing endurance, label accordingly
-        if cruise_mode == "Max Endurance":
-            st.subheader("Max Endurance vs Altitude (Payload = 0)")
-        else:
-            st.subheader("Max Range vs Altitude (Payload = 0)")
+        # Always show Range vs Altitude (use distance metric)
+        st.subheader("Max Range vs Altitude (Payload = 0)")
         # In optimized modes, ignore speed facet entirely; only filter by payload.
         if cruise_mode == "Speed Sweep (Mach/IAS)":
             # Choose speed (Mach for jets, IAS for turboprops)
@@ -607,10 +606,10 @@ if summary_df is not None and len(summary_df) > 0:
                 title_txt = "Max Range vs Altitude"
         else:
             df_alt = filtered[filtered["payload"] == 0]
-            if cruise_mode == "Max Endurance":
-                title_txt = "Max Endurance vs Altitude (Optimized)"
+            if cruise_mode == "MCT (Max Thrust)":
+                title_txt = "Max Range vs Altitude (MCT)"
             else:
-                title_txt = ("Max Range vs Altitude (Optimized)" if cruise_mode == "Max Range" else "Max Range vs Altitude (MCT)")
+                title_txt = "Max Range vs Altitude (Optimized)"
         if len(df_alt) > 0:
             # Create ISA deviation labels for better legend
             df_alt = df_alt.copy()
@@ -633,13 +632,9 @@ if summary_df is not None and len(summary_df) > 0:
                     for ac in sorted(d_dev["aircraft"].dropna().unique().tolist()):
                         d_line = d_dev[d_dev["aircraft"] == ac]
                         label_mod = ("BL" if mod == "Flatwing" else "Mod")
-                        # Choose Y metric based on mode: Range (NM) or Endurance (min)
-                        if cruise_mode == "Max Endurance":
-                            y_vals = d_line["total_time_min"]
-                            y_label = "Max Endurance (min)"
-                        else:
-                            y_vals = d_line["total_dist_nm"]
-                            y_label = "Max Range (NM)"
+                        # Always plot Range for this section
+                        y_vals = d_line["total_dist_nm"]
+                        y_label = "Max Range (NM)"
                         fig.add_trace(go.Scatter(
                             x=d_line["cruise_alt"],
                             y=y_vals,

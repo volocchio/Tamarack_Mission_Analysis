@@ -23,3 +23,8 @@ airports.csv
 .DS_Store
 *.swp
 *.bak
+
+# Generated outputs
+output/
+batch_outputs/
+208.jpg

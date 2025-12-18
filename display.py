@@ -244,6 +244,40 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
                 "Altitude (ft)", "Altitude (ft)", "Altitude (ft)",
                 "Mach", "Mach", "Mach")
 
+    
+    fig = go.Figure()
+    if not tamarack_data.empty:
+        if "Distance (NM)" in tamarack_data.columns and "Altitude (ft)" in tamarack_data.columns:
+            fig.add_trace(go.Scatter(x=tamarack_data["Distance (NM)"], y=tamarack_data["Altitude (ft)"],
+                                     name="Altitude (Tamarack)", line=dict(color="blue")))
+        if "Distance (NM)" in tamarack_data.columns and "VKTAS (kts)" in tamarack_data.columns:
+            fig.add_trace(go.Scatter(x=tamarack_data["Distance (NM)"], y=tamarack_data["VKTAS (kts)"],
+                                     name="TAS (Tamarack)", yaxis='y2', line=dict(color="orange", dash="solid")))
+        if "Distance (NM)" in tamarack_data.columns and "VKIAS (kts)" in tamarack_data.columns:
+            fig.add_trace(go.Scatter(x=tamarack_data["Distance (NM)"], y=tamarack_data["VKIAS (kts)"],
+                                     name="IAS (Tamarack)", yaxis='y2', line=dict(color="orange", dash="dash")))
+    if not flatwing_data.empty:
+        if "Distance (NM)" in flatwing_data.columns and "Altitude (ft)" in flatwing_data.columns:
+            fig.add_trace(go.Scatter(x=flatwing_data["Distance (NM)"], y=flatwing_data["Altitude (ft)"],
+                                     name="Altitude (Flatwing)", line=dict(color="purple")))
+        if "Distance (NM)" in flatwing_data.columns and "VKTAS (kts)" in flatwing_data.columns:
+            fig.add_trace(go.Scatter(x=flatwing_data["Distance (NM)"], y=flatwing_data["VKTAS (kts)"],
+                                     name="TAS (Flatwing)", yaxis='y2', line=dict(color="red", dash="solid")))
+        if "Distance (NM)" in flatwing_data.columns and "VKIAS (kts)" in flatwing_data.columns:
+            fig.add_trace(go.Scatter(x=flatwing_data["Distance (NM)"], y=flatwing_data["VKIAS (kts)"],
+                                     name="IAS (Flatwing)", yaxis='y2', line=dict(color="red", dash="dash")))
+
+    if fig.data:
+        fig.update_layout(
+            xaxis=dict(title="Distance (NM)", showgrid=True, gridcolor='LightGrey', gridwidth=1),
+            yaxis=dict(title="Altitude (ft)"),
+            yaxis2=dict(title="Speed (kt)", overlaying='y', side='right'),
+            title="Altitude, TAS and IAS vs. Distance",
+            legend=dict(x=0.01, y=1.15, orientation="h")
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        figs["alt_tas_ias"] = fig
+
     for title, col in [
         ("Rate of Climb vs. Distance", "ROC (fpm)"),
         ("Thrust vs. Distance", "Thrust (lb)"),
@@ -1238,6 +1272,7 @@ def display_simulation_results(
                 c.showPage(); y = height - 40
             draw_fig("fuel_remaining", "Fuel Remaining vs. Distance")
             draw_fig("alt_mach", "Altitude and Mach vs. Distance")
+            draw_fig("alt_tas_ias", "Altitude, TAS and IAS vs. Distance")
             draw_fig("ROC (fpm)", "Rate of Climb vs. Distance")
             draw_fig("Thrust (lb)", "Thrust vs. Distance")
             draw_fig("Drag (lb)", "Drag vs. Distance")

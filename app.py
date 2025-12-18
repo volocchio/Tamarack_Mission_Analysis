@@ -1,4 +1,5 @@
 ﻿import os
+import runpy
 import streamlit as st
 import pandas as pd
 from aircraft_config import AIRCRAFT_CONFIG
@@ -7,6 +8,17 @@ from simulation import run_simulation, haversine_with_bearing
 from display import display_simulation_results
 
 # --- Streamlit UI ---
+st.set_page_config(page_title="Flight Simulation App", layout="wide")
+mode = st.radio("Mode", ["Single Run", "Batch Sweeps"], index=0, horizontal=True, key="mode_selector")
+if mode == "Batch Sweeps":
+    batch_path = os.path.join(os.path.dirname(__file__), "batch_app.py")
+    _orig_spc = st.set_page_config
+    try:
+        st.set_page_config = lambda *args, **kwargs: None
+        runpy.run_path(batch_path, run_name="__main__")
+    finally:
+        st.set_page_config = _orig_spc
+    st.stop()
 st.title("Flight Simulation App")
 st.markdown("""
 This app simulates a flight between two airports using a specified aircraft model.
@@ -765,6 +777,8 @@ if run_all_modes:
         flatwing_data, flatwing_results, flatwing_output_file = pd.DataFrame(), {}, ""
 
 else:
+    tamarack_data, tamarack_results = pd.DataFrame(), {}
+    flatwing_data, flatwing_results = pd.DataFrame(), {}
     if wing_type == "Comparison":
         if "Tamarack" in mods_available:
             tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(

@@ -14,6 +14,12 @@ except ImportError:
     TURBOPROP_PARAMS = {}
 from simulation import run_simulation
 
+# Optional: PIL for assembling PDF summaries
+try:
+    from PIL import Image  # type: ignore
+except Exception:
+    Image = None  # type: ignore
+
 
 def build_mach_grid(mmo: float) -> list[float]:
     # Start at MMO (inclusive) and step down by 0.01 to include values like 0.70
@@ -628,6 +634,14 @@ def run_payload_range_batch(
                                         "triangle-down"
                                     ), size=6)
                                 ))
+                                if len(x_plot) > 0:
+                                    fig.add_trace(go.Scatter(
+                                        x=[0, float(x_plot[0])],
+                                        y=[float(y_vals[0]), float(y_vals[0])],
+                                        mode="lines",
+                                        line=dict(color=color, width=2.0),
+                                        showlegend=False
+                                    ))
                         title_mode = "Max Endurance" if cruise_mode == "Max Endurance" else "Max Range"
                         fig.update_layout(
                             title=f"{title_prefix} | {aircraft} | FL{int(alt/100)} | Optimized for {title_mode}",
@@ -635,6 +649,7 @@ def run_payload_range_batch(
                             yaxis_title="Payload (lb)",
                             template="plotly_white"
                         )
+                        fig.update_xaxes(rangemode="tozero")
                         fname = (
                             aircraft_summary_dir / f"payload_endurance_{aircraft}_alt{int(alt)}_optimized.png"
                             if cruise_mode == "Max Endurance" else
@@ -694,12 +709,21 @@ def run_payload_range_batch(
                                         name=f"{label_mod} Max Achieved {att_m_txt}, Attained {att_fl_txt} - {isa_label}",
                                         line=dict(color=color, dash=("dash" if isa_dev == -10 else "solid" if isa_dev == 0 else "dot" if isa_dev == 10 else "dashdot"))
                                     ))
+                                    if len(x_plot) > 0:
+                                        fig.add_trace(go.Scatter(
+                                            x=[0, float(x_plot[0])],
+                                            y=[float(y_vals[0]), float(y_vals[0])],
+                                            mode="lines",
+                                            line=dict(color=color, width=2.0),
+                                            showlegend=False
+                                        ))
                             fig.update_layout(
                                 title=f"Payload-Range | {aircraft} | FL{int(alt/100)} Goal | M {mach:.2f} Goal",
                                 xaxis_title="Range (NM)",
                                 yaxis_title="Payload (lb)",
                                 template="plotly_white"
                             )
+                            fig.update_xaxes(rangemode="tozero")
                             fname = aircraft_summary_dir / f"payload_range_{aircraft}_alt{int(alt)}_mach{mach:.2f}.png"
                             fig.write_image(str(fname), width=1400, height=900, scale=2)
                     else:
@@ -761,15 +785,91 @@ def run_payload_range_batch(
                                         "triangle-down"
                                     ), size=6)
                                 ))
+                                if len(x_plot) > 0:
+                                    fig.add_trace(go.Scatter(
+                                        x=[0, float(x_plot[0])],
+                                        y=[float(y_vals[0]), float(y_vals[0])],
+                                        mode="lines",
+                                        line=dict(color=color, width=2.0),
+                                        showlegend=False
+                                    ))
                         fig.update_layout(
                             title=f"Payload-Range | {aircraft} | FL{int(alt/100)} | MCT (Max Thrust)",
                             xaxis_title="Range (NM)",
                             yaxis_title="Payload (lb)",
                             template="plotly_white"
                         )
+                        fig.update_xaxes(rangemode="tozero")
                         fname = aircraft_summary_dir / f"payload_range_{aircraft}_alt{int(alt)}_mct.png"
                         fig.write_image(str(fname), width=1400, height=900, scale=2)
-            # Optimized modes: Save Range/Endurance vs Altitude (payload=0)
+            # MCT mode: Save both Range vs Altitude and Endurance vs Altitude (payload=0)
+            if cruise_mode == "MCT (Max Thrust)":
+                for aircraft in sorted(df["aircraft"].dropna().unique()):
+                    df_a0 = df[(df["aircraft"]==aircraft) & (df["payload"]==0)]
+                    if df_a0.empty:
+                        continue
+                    aircraft_summary_dir = aircraft_dirs[aircraft]["summary_plots"]
+                    # Common prep
+                    df_alt = df_a0.copy()
+                    df_alt.loc[:, "isa_label"] = df_alt["isa_dev"].apply(lambda x: f"ISA {x:+d}°C")
+                    # Helper to build a figure given y column and labels
+                    import plotly.graph_objects as go
+                    def _plot_altitude_family(y_col: str, y_label: str, title_txt: str, out_name: str):
+                        fig = go.Figure()
+                        for mod in sorted(df_alt["mod"].dropna().unique().tolist()):
+                            d_mod = df_alt[df_alt["mod"] == mod]
+                            for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
+                                d_dev = d_mod[pd.to_numeric(d_mod["isa_dev"], errors="coerce") == dev]
+                                try:
+                                    att_m = pd.to_numeric(d_dev.get("achieved_mach"), errors="coerce").dropna()
+                                    att_m_txt = f"M {att_m.max():.2f}" if len(att_m) > 0 else "M —"
+                                except Exception:
+                                    att_m_txt = "M —"
+                                try:
+                                    att_alt = pd.to_numeric(d_dev.get("first_level_off_ft"), errors="coerce").dropna()
+                                    att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                                except Exception:
+                                    att_fl_txt = "FL—"
+                                color = "red" if mod == "Flatwing" else "green"
+                                fig.add_trace(go.Scatter(
+                                    x=d_dev["cruise_alt"],
+                                    y=d_dev[y_col],
+                                    mode="lines+markers",
+                                    name=f"{'BL' if mod=='Flatwing' else 'Mod'} Max Achieved {att_m_txt}, Attained {att_fl_txt} - ISA {int(dev):+d}°C",
+                                    line=dict(color=color, dash=(
+                                        "longdashdot" if int(dev) == -20 else
+                                        "dash" if int(dev) == -10 else
+                                        "solid" if int(dev) == 0 else
+                                        "dot" if int(dev) == 10 else
+                                        "dashdot" if int(dev) == 20 else
+                                        "longdash"
+                                    ), width=2.5),
+                                    marker=dict(symbol=(
+                                        "triangle-up" if int(dev) == -20 else
+                                        "square" if int(dev) == -10 else
+                                        "circle" if int(dev) == 0 else
+                                        "diamond" if int(dev) == 10 else
+                                        "x" if int(dev) == 20 else
+                                        "triangle-down"
+                                    ), size=6)
+                                ))
+                        fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title=y_label, template="plotly_white")
+                        fig.write_image(str(aircraft_summary_dir / out_name), width=1600, height=900, scale=2)
+                    # Range vs Altitude (MCT)
+                    _plot_altitude_family(
+                        y_col="total_dist_nm",
+                        y_label="Max Range (NM)",
+                        title_txt=f"Range vs Altitude (MCT) | {aircraft}",
+                        out_name=f"range_vs_altitude_{aircraft}_mct.png",
+                    )
+                    # Endurance vs Altitude (MCT)
+                    _plot_altitude_family(
+                        y_col="total_time_min",
+                        y_label="Max Endurance (min)",
+                        title_txt=f"Endurance vs Altitude (MCT) | {aircraft}",
+                        out_name=f"endurance_vs_altitude_{aircraft}_mct.png",
+                    )
+            # Optimized modes: Save BOTH Range vs Altitude and Endurance vs Altitude (payload=0)
             if cruise_mode in ("Max Range", "Max Endurance"):
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
                     df_a0 = df[(df["aircraft"]==aircraft) & (df["payload"]==0)]
@@ -778,58 +878,63 @@ def run_payload_range_batch(
                     aircraft_summary_dir = aircraft_dirs[aircraft]["summary_plots"]
                     df_alt = df_a0.copy()
                     df_alt.loc[:, "isa_label"] = df_alt["isa_dev"].apply(lambda x: f"ISA {x:+d}°C")
-                    fig = go.Figure()
-                    for mod in sorted(df_alt["mod"].dropna().unique().tolist()):
-                        d_mod = df_alt[df_alt["mod"] == mod]
-                        for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
-                            d_dev = d_mod[pd.to_numeric(d_mod["isa_dev"], errors="coerce") == dev]
-                            # Legend metrics
-                            try:
-                                att_m = pd.to_numeric(d_dev.get("achieved_mach"), errors="coerce").dropna()
-                                att_m_txt = f"M {att_m.max():.2f}" if len(att_m) > 0 else "M —"
-                            except Exception:
-                                att_m_txt = "M —"
-                            try:
-                                att_alt = pd.to_numeric(d_dev.get("first_level_off_ft"), errors="coerce").dropna()
-                                att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
-                            except Exception:
-                                att_fl_txt = "FL—"
-                            # Choose metric
-                            if cruise_mode == "Max Endurance":
-                                y_vals = d_dev["total_time_min"]
-                                y_label = "Max Endurance (min)"
-                                title_txt = f"Endurance vs Altitude (Optimized) | {aircraft}"
-                                fname = aircraft_summary_dir / f"endurance_vs_altitude_{aircraft}_optimized.png"
-                            else:
-                                y_vals = d_dev["total_dist_nm"]
-                                y_label = "Max Range (NM)"
-                                title_txt = f"Range vs Altitude (Optimized) | {aircraft}"
-                                fname = aircraft_summary_dir / f"range_vs_altitude_{aircraft}_optimized.png"
-                            color = "red" if mod == "Flatwing" else "green"
-                            fig.add_trace(go.Scatter(
-                                x=d_dev["cruise_alt"],
-                                y=y_vals,
-                                mode="lines+markers",
-                                name=f"{'BL' if mod=='Flatwing' else 'Mod'} Max Achieved {att_m_txt}, Attained {att_fl_txt} - ISA {int(dev):+d}°C",
-                                line=dict(color=color, dash=(
-                                    "longdashdot" if int(dev) == -20 else
-                                    "dash" if int(dev) == -10 else
-                                    "solid" if int(dev) == 0 else
-                                    "dot" if int(dev) == 10 else
-                                    "dashdot" if int(dev) == 20 else
-                                    "longdash"
-                                ), width=2.5),
-                                marker=dict(symbol=(
-                                    "triangle-up" if int(dev) == -20 else
-                                    "square" if int(dev) == -10 else
-                                    "circle" if int(dev) == 0 else
-                                    "diamond" if int(dev) == 10 else
-                                    "x" if int(dev) == 20 else
-                                    "triangle-down"
-                                ), size=6)
-                            ))
-                    fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title=y_label, template="plotly_white")
-                    fig.write_image(str(fname), width=1600, height=900, scale=2)
+                    import plotly.graph_objects as go
+                    def _plot_opt_family(y_col: str, y_label: str, title_txt: str, out_name: str):
+                        fig = go.Figure()
+                        for mod in sorted(df_alt["mod"].dropna().unique().tolist()):
+                            d_mod = df_alt[df_alt["mod"] == mod]
+                            for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
+                                d_dev = d_mod[pd.to_numeric(d_mod["isa_dev"], errors="coerce") == dev]
+                                # Legend metrics
+                                try:
+                                    att_m = pd.to_numeric(d_dev.get("achieved_mach"), errors="coerce").dropna()
+                                    att_m_txt = f"M {att_m.max():.2f}" if len(att_m) > 0 else "M —"
+                                except Exception:
+                                    att_m_txt = "M —"
+                                try:
+                                    att_alt = pd.to_numeric(d_dev.get("first_level_off_ft"), errors="coerce").dropna()
+                                    att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
+                                except Exception:
+                                    att_fl_txt = "FL—"
+                                color = "red" if mod == "Flatwing" else "green"
+                                fig.add_trace(go.Scatter(
+                                    x=d_dev["cruise_alt"],
+                                    y=d_dev[y_col],
+                                    mode="lines+markers",
+                                    name=f"{'BL' if mod=='Flatwing' else 'Mod'} Max Achieved {att_m_txt}, Attained {att_fl_txt} - ISA {int(dev):+d}°C",
+                                    line=dict(color=color, dash=(
+                                        "longdashdot" if int(dev) == -20 else
+                                        "dash" if int(dev) == -10 else
+                                        "solid" if int(dev) == 0 else
+                                        "dot" if int(dev) == 10 else
+                                        "dashdot" if int(dev) == 20 else
+                                        "longdash"
+                                    ), width=2.5),
+                                    marker=dict(symbol=(
+                                        "triangle-up" if int(dev) == -20 else
+                                        "square" if int(dev) == -10 else
+                                        "circle" if int(dev) == 0 else
+                                        "diamond" if int(dev) == 10 else
+                                        "x" if int(dev) == 20 else
+                                        "triangle-down"
+                                    ), size=6)
+                                ))
+                        fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title=y_label, template="plotly_white")
+                        fig.write_image(str(aircraft_summary_dir / out_name), width=1600, height=900, scale=2)
+                    # Range vs Altitude (Optimized)
+                    _plot_opt_family(
+                        y_col="total_dist_nm",
+                        y_label="Max Range (NM)",
+                        title_txt=f"Range vs Altitude (Optimized) | {aircraft}",
+                        out_name=f"range_vs_altitude_{aircraft}_optimized.png",
+                    )
+                    # Endurance vs Altitude (Optimized)
+                    _plot_opt_family(
+                        y_col="total_time_min",
+                        y_label="Max Endurance (min)",
+                        title_txt=f"Endurance vs Altitude (Optimized) | {aircraft}",
+                        out_name=f"endurance_vs_altitude_{aircraft}_optimized.png",
+                    )
             # Family: Range vs Mach by Altitude (payload 0) with ISA temperature separation
             if cruise_mode == "Speed Sweep (Mach/IAS)":
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
@@ -1029,6 +1134,28 @@ def run_payload_range_batch(
                         fig.write_image(str(aircraft_summary_dir / f"endurance_vs_altitude_{aircraft}_M{mach:.2f}.png"), width=1600, height=900, scale=2)
         except Exception:
             # Best-effort; ignore plotting errors to keep batch running
+            pass
+        # Assemble a single PDF per-aircraft in the model folder from summary_plots PNGs
+        try:
+            if Image is not None:
+                for aircraft in sorted(df["aircraft"].dropna().unique()):
+                    aircraft_dir = aircraft_dirs[aircraft]["base"]
+                    summary_dir = aircraft_dirs[aircraft]["summary_plots"]
+                    png_files = sorted(summary_dir.glob("*.png"))
+                    if not png_files:
+                        continue
+                    images = []
+                    for p in png_files:
+                        try:
+                            im = Image.open(p).convert("RGB")
+                            images.append(im)
+                        except Exception:
+                            continue
+                    if images:
+                        pdf_path = aircraft_dir / "summary_plots.pdf"
+                        first, rest = images[0], images[1:]
+                        first.save(pdf_path, save_all=True, append_images=rest)
+        except Exception:
             pass
 
     return df
