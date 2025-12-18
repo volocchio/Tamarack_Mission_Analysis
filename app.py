@@ -1,5 +1,7 @@
 ﻿import os
 import runpy
+import io
+import zipfile
 import streamlit as st
 import pandas as pd
 from aircraft_config import AIRCRAFT_CONFIG
@@ -949,6 +951,45 @@ else:
         # Show directory information
         output_dir = os.path.dirname(output_files[0][1]) if output_files else "output"
         st.info(f" All files saved in: `{output_dir}`")
+        st.markdown("**Downloads**")
+        dl_cols = st.columns(min(3, max(1, len(output_files))))
+        for i, (config_name, filepath) in enumerate(output_files):
+            try:
+                with open(filepath, "rb") as f:
+                    data = f.read()
+                filename = os.path.basename(filepath) or f"{config_name}.csv"
+                with dl_cols[i % len(dl_cols)]:
+                    st.download_button(
+                        label=f"Download {config_name} CSV",
+                        data=data,
+                        file_name=filename,
+                        mime="text/csv",
+                    )
+            except Exception:
+                pass
+
+        try:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                if os.path.isdir(output_dir):
+                    for root, _, files in os.walk(output_dir):
+                        for fn in files:
+                            full_path = os.path.join(root, fn)
+                            arc_name = os.path.relpath(full_path, start=output_dir)
+                            zf.write(full_path, arcname=arc_name)
+                else:
+                    for _, filepath in output_files:
+                        if os.path.isfile(filepath):
+                            zf.write(filepath, arcname=os.path.basename(filepath))
+            zip_name = f"{os.path.basename(output_dir) or 'outputs'}.zip"
+            st.download_button(
+                label="Download all outputs (zip)",
+                data=buf.getvalue(),
+                file_name=zip_name,
+                mime="application/zip",
+            )
+        except Exception:
+            pass
         st.write("*Files contain simulation parameters sampled every 5 seconds*")
 
 
