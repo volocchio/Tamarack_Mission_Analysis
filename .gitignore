@@ -27,3 +27,15 @@ airports.csv
 # Generated outputs
 output/
 batch_outputs/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.vscode/
+.idea/
+*.code-workspace
+
+Thumbs.db
+Desktop.ini
+*.tmp
