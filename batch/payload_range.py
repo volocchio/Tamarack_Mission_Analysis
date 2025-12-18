@@ -60,9 +60,21 @@ def payload_sweep(max_payload_lb: float, num_steps: int) -> list[int]:
     return vals
 
 
-def compute_initial_fuel(max_fuel: float, mrw: float, bow: float, payload: float) -> float:
-    max_fuel_by_weight = mrw - (bow + payload)
-    return float(max(0.0, min(max_fuel, max_fuel_by_weight)))
+def compute_initial_fuel(
+    max_fuel: float,
+    mrw: float,
+    mtow: float,
+    bow: float,
+    payload: float,
+    taxi_fuel: float,
+) -> float:
+    # Constrain fuel by:
+    # - Tank capacity
+    # - Ramp weight (MRW): bow + payload + fuel <= mrw
+    # - Takeoff weight (MTOW): bow + payload + fuel - taxi_fuel <= mtow
+    max_fuel_by_mrw = mrw - (bow + payload)
+    max_fuel_by_mtow = mtow - (bow + payload) + taxi_fuel
+    return float(max(0.0, min(max_fuel, max_fuel_by_mrw, max_fuel_by_mtow)))
 
 
 def run_single_case(case: dict, hide_mach_limited: bool = False, hide_altitude_limited: bool = False) -> dict:
@@ -100,7 +112,8 @@ def run_single_case(case: dict, hide_mach_limited: bool = False, hide_altitude_l
         bow = ac[18]
         max_fuel = ac[22]
         mrw = ac[20]
-        initial_fuel = compute_initial_fuel(max_fuel, mrw, bow, payload)
+        mtow = ac[21]
+        initial_fuel = compute_initial_fuel(max_fuel, mrw, mtow, bow, payload, taxi_fuel)
 
         if initial_fuel - reserve_fuel - taxi_fuel <= 0:
             return {
@@ -137,6 +150,23 @@ def run_single_case(case: dict, hide_mach_limited: bool = False, hide_altitude_l
             range_mode=True,
             cruise_mode=cruise_mode,
         )
+
+        # If the sim returns constraint exceedances, treat the case as infeasible
+        if isinstance(results, dict) and results.get("exceedances"):
+            return {
+                **case,
+                "initial_fuel_lb": int(initial_fuel),
+                "takeoff_weight_lb": int(bow + payload + initial_fuel - taxi_fuel),
+                "status": "infeasible",
+                "error_message": "; ".join([str(x) for x in results.get("exceedances", [])]),
+                "total_dist_nm": np.nan,
+                "total_time_min": np.nan,
+                "fuel_burned_lb": np.nan,
+                "first_level_off_ft": np.nan,
+                "cruise_vktas_kts": np.nan,
+                "cruise_vkias_kts": np.nan,
+                "cruise_mode": cruise_mode,
+            }
 
         # Extract outputs
         total_dist_nm = results.get("Total Dist (NM)")
@@ -202,7 +232,7 @@ def run_single_case(case: dict, hide_mach_limited: bool = False, hide_altitude_l
             target_alt = int(cruise_alt)
             achieved_alt = int(first_level_off_ft) if first_level_off_ft is not None else None
             out["achieved_alt_ft"] = achieved_alt
-            out["altitude_limited"] = achieved_alt is None or achieved_alt + 500 < target_alt
+            out["altitude_limited"] = achieved_alt is None or achieved_alt < target_alt
         except Exception:
             out["achieved_alt_ft"] = None
             out["altitude_limited"] = True
@@ -569,6 +599,8 @@ def run_payload_range_batch(
                     if cruise_mode in ("Max Range", "Max Endurance"):
                         # Optimized modes: single plot per altitude (no Mach facet)
                         df_filtered = df_a[df_a["cruise_alt"]==alt]
+                        if "altitude_limited" in df_filtered.columns:
+                            df_filtered = df_filtered[df_filtered["altitude_limited"] == False]
                         if df_filtered.empty:
                             continue
                         df_filtered = df_filtered.copy()
@@ -644,7 +676,7 @@ def run_payload_range_batch(
                                     ))
                         title_mode = "Max Endurance" if cruise_mode == "Max Endurance" else "Max Range"
                         fig.update_layout(
-                            title=f"{title_prefix} | {aircraft} | FL{int(alt/100)} | Optimized for {title_mode}",
+                            title=f"{title_prefix} | {aircraft} | FL{int(alt/100)} Goal | Optimized for {title_mode}",
                             xaxis_title=x_label,
                             yaxis_title="Payload (lb)",
                             template="plotly_white"
@@ -794,7 +826,7 @@ def run_payload_range_batch(
                                         showlegend=False
                                     ))
                         fig.update_layout(
-                            title=f"Payload-Range | {aircraft} | FL{int(alt/100)} | MCT (Max Thrust)",
+                            title=f"Payload-Range | {aircraft} | FL{int(alt/100)} Goal | MCT (Max Thrust)",
                             xaxis_title="Range (NM)",
                             yaxis_title="Payload (lb)",
                             template="plotly_white"

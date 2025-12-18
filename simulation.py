@@ -1427,7 +1427,7 @@ def run_simulation(
     })
 
     try:
-        if landing_fuel_remaining < float(reserve_fuel):
+        if (not range_mode) and landing_fuel_remaining < float(reserve_fuel):
             try:
                 req = int(round(float(reserve_fuel)))
             except Exception:

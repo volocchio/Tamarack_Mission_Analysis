@@ -107,11 +107,23 @@ with st.sidebar:
 
     col_a1, col_a2, col_a3 = st.columns(3)
     with col_a1:
-        alt_start = st.number_input("Altitude start (ft)", value=41000, step=1000)
+        alt_start = st.number_input("Altitude start (ft)", value=45000, step=1000)
     with col_a2:
-        alt_end = st.number_input("Altitude end (ft)", value=5000, step=1000)
+        alt_end = st.number_input("Altitude end (ft)", value=15000, step=1000)
     with col_a3:
         alt_step = st.number_input("Altitude step (ft)", value=-2000, step=500)
+
+    ceiling_vals = []
+    for a in selected_aircraft:
+        for m in selected_mods:
+            try:
+                ceiling_vals.append(float(AIRCRAFT_CONFIG[(a, m)][8]))
+            except Exception:
+                pass
+    ceiling_min = min(ceiling_vals) if len(ceiling_vals) > 0 else None
+    alt_start_eff = int(min(float(alt_start), float(ceiling_min))) if ceiling_min is not None else int(alt_start)
+    if ceiling_min is not None and float(alt_start) > float(ceiling_min) + 1e-9:
+        st.info(f"Altitude sweep start clamped to {int(ceiling_min):,} ft based on selected aircraft ceiling.")
 
     # Plot types
     st.header("Plots to show")
@@ -189,7 +201,7 @@ with st.sidebar:
             speed_count_est = _count_range_int(int(kias_start), int(kias_end), int(kias_step))
     else:
         speed_count_est = 1
-    alt_count_est = _count_range_int(int(alt_start), int(alt_end), int(alt_step))
+    alt_count_est = _count_range_int(int(alt_start_eff), int(alt_end), int(alt_step))
     payload_count_est = int(payload_steps)
     est_total_runs = max(1, len(selected_aircraft) * len(selected_mods) * len(selected_isa) * 1 * speed_count_est * alt_count_est * payload_count_est)
     eta_min_est = est_total_runs / max(1, int(runs_per_min))
@@ -256,7 +268,7 @@ if run_clicked:
             # Optimization modes: no speed grid
             mach_values = None
             kias_values = None
-        alt_values = build_int_range(int(alt_start), int(alt_end), int(alt_step))
+        alt_values = build_int_range(int(alt_start_eff), int(alt_end), int(alt_step))
 
         t0 = time.perf_counter()
         df = run_payload_range_batch(
@@ -384,6 +396,8 @@ if summary_df is not None and len(summary_df) > 0:
                 # Optimization modes: ignore speed facet
                 df_pr = filtered[filtered["cruise_alt"] == sel_alt]
                 if cruise_mode in ("Max Range", "Max Endurance"):
+                    if "altitude_limited" in df_pr.columns:
+                        df_pr = df_pr[df_pr["altitude_limited"] == False]
                     title_suffix = f", Optimized for {cruise_mode}"
                 else:
                     title_suffix = ", MCT (Max Thrust)"
@@ -448,7 +462,7 @@ if summary_df is not None and len(summary_df) > 0:
                                     showlegend=False
                                 ))
                 fig.update_layout(
-                    title=f"{title_base} at FL{int(sel_alt/100):.0f}{title_suffix}",
+                    title=f"{title_base} at FL{int(sel_alt/100):.0f} Goal{title_suffix}",
                     xaxis_title=x_axis_label,
                     yaxis_title="Payload (lb)",
                     template="plotly_white",
