@@ -28,6 +28,8 @@ It calculates flight parameters such as altitude, speed, thrust, and drag over t
 and visualizes the flight profile with charts.
 """)
 
+main = st.container()
+
 # Load airports data
 airports_df = load_airports()
 
@@ -525,6 +527,24 @@ with st.sidebar:
             'sfc_low': flat_sfc_low, 'sfc_mid': flat_sfc_mid, 'sfc_high': flat_sfc_high,
             'thrust_low': flat_thrust_low, 'thrust_mid': flat_thrust_mid, 'thrust_high': flat_thrust_high,
         })
+        try:
+            tam_sfc_low = int(tam_applied.get('sfc_low', tam_sfc_low))
+            tam_sfc_mid = int(tam_applied.get('sfc_mid', tam_sfc_mid))
+            tam_sfc_high = int(tam_applied.get('sfc_high', tam_sfc_high))
+            tam_thrust_low = int(tam_applied.get('thrust_low', tam_thrust_low))
+            tam_thrust_mid = int(tam_applied.get('thrust_mid', tam_thrust_mid))
+            tam_thrust_high = int(tam_applied.get('thrust_high', tam_thrust_high))
+        except Exception:
+            pass
+        try:
+            flat_sfc_low = int(flat_applied.get('sfc_low', flat_sfc_low))
+            flat_sfc_mid = int(flat_applied.get('sfc_mid', flat_sfc_mid))
+            flat_sfc_high = int(flat_applied.get('sfc_high', flat_sfc_high))
+            flat_thrust_low = int(flat_applied.get('thrust_low', flat_thrust_low))
+            flat_thrust_mid = int(flat_applied.get('thrust_mid', flat_thrust_mid))
+            flat_thrust_high = int(flat_applied.get('thrust_high', flat_thrust_high))
+        except Exception:
+            pass
         col_bias_left, col_bias_right = st.columns(2)
         with col_bias_left:
             st.markdown("**Tamarack Biases (Applied)**")
@@ -534,6 +554,12 @@ with st.sidebar:
             st.write(f"Thrust Low (%): {tam_applied['thrust_low']}")
             st.write(f"Thrust Mid (%): {tam_applied['thrust_mid']}")
             st.write(f"Thrust High (%): {tam_applied['thrust_high']}")
+            try:
+                _r = st.session_state.get('auto_bias_report_tamarack')
+                if _r:
+                    st.caption(_r)
+            except Exception:
+                pass
         with col_bias_right:
             st.markdown("**Flatwing Biases (Applied)**")
             st.write(f"SFC Low (%): {flat_applied['sfc_low']}")
@@ -552,144 +578,303 @@ with st.sidebar:
         help="Above 10,000 ft: set cruise speed by objective. For MCT, hold max thrust. For Max Range/Endurance, target optimal CL/CD with V >= 1.2*Vs."
     )
 
-    # Run All Modes and other options
-run_all_modes = st.checkbox("Run All Modes", value=False, help="Run MCT, LRC, and Max Endurance; show detailed results for the selected mode above.")
-v1_cut_enabled = st.checkbox("Enable V1 Cut Simulation (Single Engine)", value=False)
-write_output_file = st.checkbox("Write Output CSV File", value=True)
-fuel_cost_per_gal = st.number_input("Fuel Cost ($/gal)", min_value=0.0, value=5.0, step=0.1)
+    run_all_modes = st.sidebar.checkbox("Run All Modes", value=False, help="Run MCT, LRC, and Max Endurance; show detailed results for the selected mode above.")
+    v1_cut_enabled = st.sidebar.checkbox("Enable V1 Cut Simulation (Single Engine)", value=False)
+    write_output_file = st.sidebar.checkbox("Write Output CSV File", value=True)
+    fuel_cost_per_gal = st.sidebar.number_input("Fuel Cost ($/gal)", min_value=0.0, value=5.0, step=0.1)
 
-# Auto mode biases are already computed above when bias_mode == "Auto"; no further seeding needed
+    main.markdown("---")
+    run_clicked = main.button("Run Simulation", type="primary")
+    if not run_clicked:
+        if 'last_run' not in st.session_state:
+            main.info("Adjust parameters, then click 'Run Simulation' to execute.")
+            st.stop()
+        lr = st.session_state['last_run']
+        try:
+            with main:
+                display_simulation_results(
+                    lr.get('tamarack_data', pd.DataFrame()), lr.get('tamarack_results', {}),
+                    lr.get('flatwing_data', pd.DataFrame()), lr.get('flatwing_results', {}),
+                    v1_cut_enabled,
+                    lr.get('dep_lat', 0.0), lr.get('dep_lon', 0.0), lr.get('arr_lat', 0.0), lr.get('arr_lon', 0.0),
+                    lr.get('distance_nm', 0.0), lr.get('bearing_deg', 0.0),
+                    winds_temps_source,
+                    isa_dev,
+                    (lr.get('cruise_altitude_f') if wing_type == "Flatwing" else lr.get('cruise_altitude_t')),
+                    lr.get('dep_airport_code', ''),
+                    lr.get('arr_airport_code', ''),
+                    (lr.get('fuel_f') if wing_type == "Flatwing" else lr.get('fuel_t')),
+                    report_output_dir=lr.get('report_output_dir'),
+                    weight_df_flatwing=lr.get('weight_df_f'),
+                    weight_df_tamarack=lr.get('weight_df_t'),
+                    weight_df_single=lr.get('weight_df_single'),
+                    modes_summary_df=lr.get('modes_summary_df'),
+                    fuel_cost_per_gal=fuel_cost_per_gal
+                )
+        except Exception as e:
+            main.exception(e)
+        st.stop()
 
-# Require explicit Run to execute the simulation
-st.markdown("---")
-run_clicked = st.button("Run Simulation", type="primary")
-if run_clicked:
     try:
         del st.session_state['last_run']
     except Exception:
         pass
-if not run_clicked and 'last_run' not in st.session_state:
-    st.info("Adjust parameters, then click 'Run Simulation' to execute.")
-    st.stop()
-if not run_clicked and 'last_run' in st.session_state:
-    lr = st.session_state['last_run']
+
+    _run_status = main.empty()
     try:
-        display_simulation_results(
-            lr.get('tamarack_data', pd.DataFrame()), lr.get('tamarack_results', {}),
-            lr.get('flatwing_data', pd.DataFrame()), lr.get('flatwing_results', {}),
-            v1_cut_enabled,
-            lr.get('dep_lat', 0.0), lr.get('dep_lon', 0.0), lr.get('arr_lat', 0.0), lr.get('arr_lon', 0.0),
-            lr.get('distance_nm', 0.0), lr.get('bearing_deg', 0.0),
-            winds_temps_source,
-            isa_dev,
-            (lr.get('cruise_altitude_f') if wing_type == "Flatwing" else lr.get('cruise_altitude_t')),
-            lr.get('dep_airport_code', ''),
-            lr.get('arr_airport_code', ''),
-            (lr.get('fuel_f') if wing_type == "Flatwing" else lr.get('fuel_t')),
-            report_output_dir=lr.get('report_output_dir'),
-            weight_df_flatwing=lr.get('weight_df_f'),
-            weight_df_tamarack=lr.get('weight_df_t'),
-            weight_df_single=lr.get('weight_df_single'),
-            modes_summary_df=lr.get('modes_summary_df'),
-            fuel_cost_per_gal=fuel_cost_per_gal
-        )
-        # Display output file information (for all wing types)
-        st.markdown("---")
-        st.subheader('Output Files')
-        output_files = []
-        if wing_type == "Comparison":
-            if lr.get('tamarack_output_file'):
-                output_files.append((f"{aircraft_model} Tamarack", lr['tamarack_output_file']))
-            if lr.get('flatwing_output_file'):
-                output_files.append((f"{aircraft_model} Flatwing", lr['flatwing_output_file']))
-        elif wing_type == "Tamarack" and lr.get('tamarack_output_file'):
-            output_files.append((f"{aircraft_model} Tamarack", lr['tamarack_output_file']))
-        elif wing_type == "Flatwing" and lr.get('flatwing_output_file'):
-            output_files.append((f"{aircraft_model} Flatwing", lr['flatwing_output_file']))
-        if output_files:
-            st.write("**Time history data files have been created:**")
-            for config_name, filepath in output_files:
-                st.success(f" {config_name}: `{filepath}`")
-            output_dir = os.path.dirname(output_files[0][1]) if output_files else "output"
-            st.info(f" All files saved in: `{output_dir}`")
-            st.write("*Files contain simulation parameters sampled every 5 seconds*")
+        _run_status.write("Running...")
     except Exception:
         pass
-    st.stop()
-if bias_mode == "Auto":
-    try:
-        if wing_type in ("Comparison", "Tamarack") and "Tamarack" in mods_available:
-            for _ in range(2):
-                _t_data, _t_res, *_ = run_simulation(
+
+    if bias_mode == "Auto" and "Tamarack" in mods_available:
+        _auto_status = main.empty()
+        try:
+            _auto_status.write(
+                "Auto bias calibration running... "
+                f"(aircraft={aircraft_model}, wing_type={wing_type}, cruise_mode={cruise_mode}, "
+                f"tgt_climb={float(real_t_climb_min_t) if 'real_t_climb_min_t' in locals() else 0:.1f} min, "
+                f"tgt_cruise={float(real_cruise_pph_t) if 'real_cruise_pph_t' in locals() else 0:.0f} lb/hr)"
+            )
+        except Exception:
+            pass
+
+        def _clamp_bias(v):
+            try:
+                return int(max(-20, min(20, round(float(v)))))
+            except Exception:
+                return 0
+
+        def _pph_from_results(r: dict) -> float:
+            try:
+                fuel_lb = float(r.get("Cruise Fuel (lb)", 0) or 0)
+                time_min = float(r.get("Cruise Time (min)", 0) or 0)
+                if time_min <= 0:
+                    fuel_lb = float(r.get("Total Fuel Burned (lb)", 0) or 0)
+                    time_min = float(r.get("Total Time (min)", 0) or 0)
+                    if time_min <= 0:
+                        return 0.0
+                return fuel_lb / (time_min / 60.0)
+            except Exception:
+                return 0.0
+
+        try:
+            sfc_low = _clamp_bias(tam_sfc_low)
+            sfc_mid = _clamp_bias(tam_sfc_mid)
+            sfc_high = _clamp_bias(tam_sfc_high)
+            thrust_low = _clamp_bias(tam_thrust_low)
+            thrust_mid = _clamp_bias(tam_thrust_mid)
+            thrust_high = _clamp_bias(tam_thrust_high)
+
+            _last_tgt_climb = 0.0
+            _last_sim_climb = 0.0
+            _last_tgt_pph = 0.0
+            _last_sim_pph = 0.0
+            _last_tgt_toc = 0.0
+            _last_sim_toc = 0.0
+
+            for _ in range(3):
+                _, sim_res, *_ = run_simulation(
                     dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
                     payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
                     winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
-                    sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
-                    thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
-                    bias_alt_mid=bias_alt_mid_ft)
-                _sim = float(_t_res.get("Climb Time (min)", 0) or 0)
-                _tgt = float(real_t_climb_min_t)
-                if _tgt <= 0 or _sim <= 0:
-                    break
-                _ratio = (_sim - _tgt) / _tgt
-                _delta = int(max(-15, min(15, round(_ratio * 40))))
-                if _delta == 0:
-                    break
-                tam_thrust_low = int(max(-20, min(20, tam_thrust_low + _delta)))
-                tam_thrust_mid = int(max(-20, min(20, tam_thrust_mid + _delta)))
-                tam_thrust_high = int(max(-20, min(20, tam_thrust_high + _delta)))
-                if abs(_sim - _tgt) <= 1.0:
-                    break
+                    sfc_bias_low=sfc_low, sfc_bias_mid=sfc_mid, sfc_bias_high=sfc_high,
+                    thrust_bias_low=thrust_low, thrust_bias_mid=thrust_mid, thrust_bias_high=thrust_high,
+                    bias_alt_mid=bias_alt_mid_ft
+                )
 
-        if wing_type in ("Comparison", "Flatwing") and "Flatwing" in mods_available:
-            for _ in range(2):
-                _f_data, _f_res, *_ = run_simulation(
-                    dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                    payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-                    winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
-                    sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
-                    thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
-                    bias_alt_mid=bias_alt_mid_ft)
-                _sim = float(_f_res.get("Climb Time (min)", 0) or 0)
-                _tgt = float(real_t_climb_min_f)
-                if _tgt <= 0 or _sim <= 0:
-                    break
-                _ratio = (_sim - _tgt) / _tgt
-                _delta = int(max(-15, min(15, round(_ratio * 40))))
-                if _delta == 0:
-                    break
-                flat_thrust_low = int(max(-20, min(20, flat_thrust_low + _delta)))
-                flat_thrust_mid = int(max(-20, min(20, flat_thrust_mid + _delta)))
-                flat_thrust_high = int(max(-20, min(20, flat_thrust_high + _delta)))
-                if abs(_sim - _tgt) <= 1.0:
-                    break
-    except Exception:
-        pass
-    try:
-        st.session_state['applied_biases'] = {
-            'Tamarack': {
+                try:
+                    tgt_climb = float(real_t_climb_min_t)
+                except Exception:
+                    tgt_climb = 0.0
+                try:
+                    sim_climb = float(sim_res.get("Climb Time (min)", 0) or 0)
+                except Exception:
+                    sim_climb = 0.0
+
+                _last_tgt_climb = tgt_climb
+                _last_sim_climb = sim_climb
+
+                if tgt_climb > 0 and sim_climb > 0:
+                    ratio = (sim_climb - tgt_climb) / tgt_climb
+                    delta = _clamp_bias(ratio * 40)
+                    if delta != 0:
+                        thrust_low = _clamp_bias(thrust_low + delta)
+                        thrust_mid = _clamp_bias(thrust_mid + delta)
+                        thrust_high = _clamp_bias(thrust_high + delta)
+
+                try:
+                    tgt_pph = float(real_cruise_pph_t)
+                except Exception:
+                    tgt_pph = 0.0
+                sim_pph = _pph_from_results(sim_res)
+
+                _last_tgt_pph = tgt_pph
+                _last_sim_pph = sim_pph
+
+                if tgt_pph > 0 and sim_pph > 0:
+                    ratio = (sim_pph - tgt_pph) / tgt_pph
+                    delta = _clamp_bias(ratio * 40)
+                    delta = _clamp_bias(-delta)
+                    if delta != 0:
+                        sfc_low = _clamp_bias(sfc_low + delta)
+                        sfc_mid = _clamp_bias(sfc_mid + delta)
+                        sfc_high = _clamp_bias(sfc_high + delta)
+
+                try:
+                    tgt_toc = float(real_fuel_toc_lb_t)
+                except Exception:
+                    tgt_toc = 0.0
+                try:
+                    sim_toc = float(sim_res.get("Climb Fuel (lb)", 0) or 0)
+                except Exception:
+                    sim_toc = 0.0
+
+                _last_tgt_toc = tgt_toc
+                _last_sim_toc = sim_toc
+
+                if tgt_toc > 0 and sim_toc > 0:
+                    ratio = (sim_toc - tgt_toc) / tgt_toc
+                    delta = _clamp_bias(ratio * 40)
+                    delta = _clamp_bias(-delta)
+                    if delta != 0:
+                        sfc_low = _clamp_bias(sfc_low + delta)
+                        sfc_mid = _clamp_bias(sfc_mid + delta)
+                        sfc_high = _clamp_bias(sfc_high + delta)
+
+            tam_sfc_low, tam_sfc_mid, tam_sfc_high = sfc_low, sfc_mid, sfc_high
+            tam_thrust_low, tam_thrust_mid, tam_thrust_high = thrust_low, thrust_mid, thrust_high
+            applied = st.session_state.get('applied_biases', {})
+            applied['Tamarack'] = {
                 'sfc_low': tam_sfc_low, 'sfc_mid': tam_sfc_mid, 'sfc_high': tam_sfc_high,
                 'thrust_low': tam_thrust_low, 'thrust_mid': tam_thrust_mid, 'thrust_high': tam_thrust_high,
-            },
-            'Flatwing': {
-                'sfc_low': flat_sfc_low, 'sfc_mid': flat_sfc_mid, 'sfc_high': flat_sfc_high,
-                'thrust_low': flat_thrust_low, 'thrust_mid': flat_thrust_mid, 'thrust_high': flat_thrust_high,
-            },
-        }
-    except Exception:
-        pass
+            }
+            st.session_state['applied_biases'] = applied
+            try:
+                st.session_state['tam_sfc_low'] = int(tam_sfc_low)
+                st.session_state['tam_sfc_mid'] = int(tam_sfc_mid)
+                st.session_state['tam_sfc_high'] = int(tam_sfc_high)
+                st.session_state['tam_thrust_low'] = int(tam_thrust_low)
+                st.session_state['tam_thrust_mid'] = int(tam_thrust_mid)
+                st.session_state['tam_thrust_high'] = int(tam_thrust_high)
+            except Exception:
+                pass
+            try:
+                st.session_state['auto_bias_report_tamarack'] = (
+                    f"Last Tamarack auto-bias: tgt climb={_last_tgt_climb:.1f} min, sim climb={_last_sim_climb:.1f} min; "
+                    f"tgt cruise={_last_tgt_pph:.0f} lb/hr, sim cruise={_last_sim_pph:.0f} lb/hr; "
+                    f"tgt TOC fuel={_last_tgt_toc:.0f} lb, sim TOC fuel={_last_sim_toc:.0f} lb; "
+                    f"SFC=({tam_sfc_low},{tam_sfc_mid},{tam_sfc_high})%, Thrust=({tam_thrust_low},{tam_thrust_mid},{tam_thrust_high})%"
+                )
+            except Exception:
+                pass
+            try:
+                _auto_status.write(
+                    "Auto bias complete. "
+                    f"Target climb={_last_tgt_climb:.1f} min, Sim climb={_last_sim_climb:.1f} min; "
+                    f"Target cruise={_last_tgt_pph:.0f} lb/hr, Sim cruise={_last_sim_pph:.0f} lb/hr; "
+                    f"Target TOC fuel={_last_tgt_toc:.0f} lb, Sim TOC fuel={_last_sim_toc:.0f} lb. "
+                    f"Tamarack SFC mid={tam_sfc_mid}%, Thrust mid={tam_thrust_mid}%"
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            main.exception(e)
+        try:
+            if (_last_sim_climb == 0.0 and _last_sim_pph == 0.0) or (_last_tgt_climb == 0.0 and _last_tgt_pph == 0.0):
+                _auto_status.write(
+                    "Auto bias did not change values because the target/sim metrics were missing/zero. "
+                    f"Target climb={_last_tgt_climb:.1f}, Sim climb={_last_sim_climb:.1f}, "
+                    f"Target cruise={_last_tgt_pph:.0f}, Sim cruise={_last_sim_pph:.0f}."
+                )
+        except Exception:
+            pass
 
-chosen_mode = cruise_mode
-if run_all_modes:
-    modes_to_run = ["MCT (Max Thrust)", "Max Range", "Max Endurance"]
-    # Preserve order but put chosen mode first for summary display
-    ordered_modes = [m for m in modes_to_run if m == chosen_mode] + [m for m in modes_to_run if m != chosen_mode]
-    results_by_mode = {}
+    chosen_mode = cruise_mode
+    modes_summary_df = None
+    tamarack_output_file = ""
+    flatwing_output_file = ""
 
-    for mode in modes_to_run:
-        res = {}
-        if wing_type == "Comparison":
-            if "Tamarack" in mods_available:
+    if run_all_modes:
+        modes_to_run = ["MCT (Max Thrust)", "Max Range", "Max Endurance"]
+        ordered_modes = [m for m in modes_to_run if m == chosen_mode] + [m for m in modes_to_run if m != chosen_mode]
+        results_by_mode = {}
+
+        try:
+            _mods_count = 1
+            if wing_type == "Comparison":
+                _mods_count = int((1 if "Tamarack" in mods_available else 0) + (1 if "Flatwing" in mods_available else 0))
+                if _mods_count <= 0:
+                    _mods_count = 1
+            _mode_total_steps = max(1, len(modes_to_run) * _mods_count)
+            _mode_step = 0
+            _mode_progress = main.progress(0)
+            _mode_status = main.empty()
+        except Exception:
+            _mode_total_steps = 1
+            _mode_step = 0
+            _mode_progress = None
+            _mode_status = None
+
+        chosen_coords = None
+        first_coords = None
+
+        for mode in modes_to_run:
+            res = {}
+            if wing_type == "Comparison":
+                if "Tamarack" in mods_available:
+                    try:
+                        if _mode_status is not None:
+                            _mode_status.write(f"Running {mode} - Tamarack ({_mode_step + 1}/{_mode_total_steps})")
+                    except Exception:
+                        pass
+                    t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
+                        dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
+                        payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                        winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
+                        sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
+                        thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
+                        bias_alt_mid=bias_alt_mid_ft)
+                    res["Tamarack"] = (t_data, t_results, t_out)
+                    if first_coords is None:
+                        first_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
+                    if mode == chosen_mode:
+                        chosen_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
+                    _mode_step += 1
+                    try:
+                        if _mode_progress is not None:
+                            _mode_progress.progress(min(1.0, _mode_step / max(1, _mode_total_steps)))
+                    except Exception:
+                        pass
+                if "Flatwing" in mods_available:
+                    try:
+                        if _mode_status is not None:
+                            _mode_status.write(f"Running {mode} - Flatwing ({_mode_step + 1}/{_mode_total_steps})")
+                    except Exception:
+                        pass
+                    f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
+                        dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
+                        payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                        winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
+                        sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
+                        thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
+                        bias_alt_mid=bias_alt_mid_ft)
+                    res["Flatwing"] = (f_data, f_results, f_out)
+                    if first_coords is None:
+                        first_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
+                    if mode == chosen_mode and chosen_coords is None:
+                        chosen_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
+                    _mode_step += 1
+                    try:
+                        if _mode_progress is not None:
+                            _mode_progress.progress(min(1.0, _mode_step / max(1, _mode_total_steps)))
+                    except Exception:
+                        pass
+            elif wing_type == "Tamarack":
+                try:
+                    if _mode_status is not None:
+                        _mode_status.write(f"Running {mode} ({_mode_step + 1}/{_mode_total_steps})")
+                except Exception:
+                    pass
                 t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
                     dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
                     payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
@@ -698,7 +883,22 @@ if run_all_modes:
                     thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
                     bias_alt_mid=bias_alt_mid_ft)
                 res["Tamarack"] = (t_data, t_results, t_out)
-            if "Flatwing" in mods_available:
+                if first_coords is None:
+                    first_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
+                if mode == chosen_mode:
+                    chosen_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
+                _mode_step += 1
+                try:
+                    if _mode_progress is not None:
+                        _mode_progress.progress(min(1.0, _mode_step / max(1, _mode_total_steps)))
+                except Exception:
+                    pass
+            elif wing_type == "Flatwing":
+                try:
+                    if _mode_status is not None:
+                        _mode_status.write(f"Running {mode} ({_mode_step + 1}/{_mode_total_steps})")
+                except Exception:
+                    pass
                 f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
                     dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
                     payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
@@ -707,82 +907,104 @@ if run_all_modes:
                     thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
                     bias_alt_mid=bias_alt_mid_ft)
                 res["Flatwing"] = (f_data, f_results, f_out)
+                if first_coords is None:
+                    first_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
+                if mode == chosen_mode:
+                    chosen_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
+                _mode_step += 1
+                try:
+                    if _mode_progress is not None:
+                        _mode_progress.progress(min(1.0, _mode_step / max(1, _mode_total_steps)))
+                except Exception:
+                    pass
+
+            results_by_mode[mode] = res
+
+        try:
+            if _mode_status is not None:
+                _mode_status.write("All modes complete.")
+            if _mode_progress is not None:
+                _mode_progress.progress(1.0)
+        except Exception:
+            pass
+
+        if chosen_coords is None:
+            chosen_coords = first_coords
+        if chosen_coords is not None:
+            dep_lat, dep_lon, arr_lat, arr_lon = chosen_coords
+
+        rows = []
+        def mode_short(m: str) -> str:
+            return {"MCT (Max Thrust)": "MCT", "Max Range": "LRC", "Max Endurance": "Max End"}.get(m, m)
+
+        if wing_type == "Comparison":
+            for m in ordered_modes:
+                t_res = results_by_mode.get(m, {}).get("Tamarack", (pd.DataFrame(), {}, ""))[1]
+                f_res = results_by_mode.get(m, {}).get("Flatwing", (pd.DataFrame(), {}, ""))[1]
+                t_burn = float(t_res.get("Total Fuel Burned (lb)", 0) or 0)
+                f_burn = float(f_res.get("Total Fuel Burned (lb)", 0) or 0)
+                t_time = float(t_res.get("Total Time (min)", 0) or 0)
+                f_time = float(f_res.get("Total Time (min)", 0) or 0)
+                lb_per_gal = 6.7
+                savings_lb = f_burn - t_burn
+                savings_gal = savings_lb / lb_per_gal if lb_per_gal > 0 else 0.0
+                rows.append({
+                    "Mode": mode_short(m),
+                    "Chosen": (m == chosen_mode),
+                    "Flatwing Fuel Used (lb)": f"{f_burn:,.0f}",
+                    "Tamarack Fuel Used (lb)": f"{t_burn:,.0f}",
+                    "Fuel Saved (lb)": f"{savings_lb:,.0f}",
+                    "Fuel Saved (gal)": f"{savings_gal:,.1f}",
+                    "Flatwing Time (min)": f"{f_time:,.0f}",
+                    "Tamarack Time (min)": f"{t_time:,.0f}"
+                })
+        else:
+            key = "Flatwing" if wing_type == "Flatwing" else "Tamarack"
+            for m in ordered_modes:
+                r = results_by_mode.get(m, {}).get(key, (pd.DataFrame(), {}, ""))[1]
+                burn = float(r.get("Total Fuel Burned (lb)", 0) or 0)
+                time_min = float(r.get("Total Time (min)", 0) or 0)
+                rows.append({
+                    "Mode": mode_short(m),
+                    "Chosen": (m == chosen_mode),
+                    "Fuel Used (lb)": f"{burn:,.0f}",
+                    "Total Time (min)": f"{time_min:,.0f}"
+                })
+        try:
+            modes_summary_df = pd.DataFrame(rows)
+        except Exception:
+            modes_summary_df = None
+
+        chosen = results_by_mode.get(chosen_mode, {})
+        if "Tamarack" in chosen:
+            tamarack_data, tamarack_results, tamarack_output_file = chosen["Tamarack"]
+        else:
+            tamarack_data, tamarack_results, tamarack_output_file = pd.DataFrame(), {}, ""
+        if "Flatwing" in chosen:
+            flatwing_data, flatwing_results, flatwing_output_file = chosen["Flatwing"]
+        else:
+            flatwing_data, flatwing_results, flatwing_output_file = pd.DataFrame(), {}, ""
+    else:
+        tamarack_data, tamarack_results = pd.DataFrame(), {}
+        flatwing_data, flatwing_results = pd.DataFrame(), {}
+        if wing_type == "Comparison":
+            if "Tamarack" in mods_available:
+                tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
+                    dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
+                    payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                    winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
+                    sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
+                    thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
+                    bias_alt_mid=bias_alt_mid_ft)
+            if "Flatwing" in mods_available:
+                flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
+                    dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
+                    payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                    winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
+                    sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
+                    thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
+                    bias_alt_mid=bias_alt_mid_ft)
         elif wing_type == "Tamarack":
-            t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
-                dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-                payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-                winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
-                sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
-                thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
-                bias_alt_mid=bias_alt_mid_ft)
-            res["Tamarack"] = (t_data, t_results, t_out)
-        elif wing_type == "Flatwing":
-            f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
-                dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-                winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
-                sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
-                thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
-                bias_alt_mid=bias_alt_mid_ft)
-            res["Flatwing"] = (f_data, f_results, f_out)
-        results_by_mode[mode] = res
-
-    rows = []
-    def mode_short(m: str) -> str:
-        return {"MCT (Max Thrust)": "MCT", "Max Range": "LRC", "Max Endurance": "Max End"}.get(m, m)
-    if wing_type == "Comparison":
-        for m in ordered_modes:
-            t_res = results_by_mode.get(m, {}).get("Tamarack", (pd.DataFrame(), {}, ""))[1]
-            f_res = results_by_mode.get(m, {}).get("Flatwing", (pd.DataFrame(), {}, ""))[1]
-            t_burn = float(t_res.get("Total Fuel Burned (lb)", 0) or 0)
-            f_burn = float(f_res.get("Total Fuel Burned (lb)", 0) or 0)
-            t_time = float(t_res.get("Total Time (min)", 0) or 0)
-            f_time = float(f_res.get("Total Time (min)", 0) or 0)
-            lb_per_gal = 6.7
-            savings_lb = f_burn - t_burn
-            savings_gal = savings_lb / lb_per_gal if lb_per_gal > 0 else 0.0
-            rows.append({
-                "Mode": mode_short(m),
-                "Chosen": (m == chosen_mode),
-                "Flatwing Fuel Used (lb)": f"{f_burn:,.0f}",
-                "Tamarack Fuel Used (lb)": f"{t_burn:,.0f}",
-                "Fuel Saved (lb)": f"{savings_lb:,.0f}",
-                "Fuel Saved (gal)": f"{savings_gal:,.1f}",
-                "Flatwing Time (min)": f"{f_time:,.0f}",
-                "Tamarack Time (min)": f"{t_time:,.0f}"
-            })
-    else:
-        key = "Flatwing" if wing_type == "Flatwing" else "Tamarack"
-        for m in ordered_modes:
-            r = results_by_mode.get(m, {}).get(key, (pd.DataFrame(), {}, ""))[1]
-            burn = float(r.get("Total Fuel Burned (lb)", 0) or 0)
-            time_min = float(r.get("Total Time (min)", 0) or 0)
-            rows.append({
-                "Mode": mode_short(m),
-                "Chosen": (m == chosen_mode),
-                "Fuel Used (lb)": f"{burn:,.0f}",
-                "Total Time (min)": f"{time_min:,.0f}"
-            })
-    try:
-        modes_summary_df = pd.DataFrame(rows)
-    except Exception:
-        modes_summary_df = None
-
-    chosen = results_by_mode.get(chosen_mode, {})
-    if "Tamarack" in chosen:
-        tamarack_data, tamarack_results, tamarack_output_file = chosen["Tamarack"]
-    else:
-        tamarack_data, tamarack_results, tamarack_output_file = pd.DataFrame(), {}, ""
-    if "Flatwing" in chosen:
-        flatwing_data, flatwing_results, flatwing_output_file = chosen["Flatwing"]
-    else:
-        flatwing_data, flatwing_results, flatwing_output_file = pd.DataFrame(), {}, ""
-
-else:
-    tamarack_data, tamarack_results = pd.DataFrame(), {}
-    flatwing_data, flatwing_results = pd.DataFrame(), {}
-    if wing_type == "Comparison":
-        if "Tamarack" in mods_available:
             tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
                 dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
                 payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
@@ -790,36 +1012,20 @@ else:
                 sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
                 thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
                 bias_alt_mid=bias_alt_mid_ft)
-        if "Flatwing" in mods_available:
+        elif wing_type == "Flatwing":
             flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
                 dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
                 payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
                 winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
                 sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
                 thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
-                bias_alt_mid=bias_alt_mid_ft)
-    elif wing_type == "Tamarack":
-        tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
-            dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-            payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-            winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
-            sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
-            thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
-            bias_alt_mid=bias_alt_mid_ft)
-    elif wing_type == "Flatwing":
-        flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
-            dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-            payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-            winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
-            sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
-            thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
-            bias_alt_mid=bias_alt_mid_ft)# Display results
+                bias_alt_mid=bias_alt_mid_ft)# Display results
     try:
         distance_nm, bearing_deg = haversine_with_bearing(dep_lat, dep_lon, arr_lat, arr_lon)
     except Exception:
         distance_nm, bearing_deg = 0.0, 0.0
-    st.markdown("---")
-    st.header('Simulation Results')
+    main.markdown("---")
+    main.header('Simulation Results')
     # Determine output folder for report (same as CSV)
     report_output_dir = None
     if 'tamarack_output_file' in locals():
@@ -907,29 +1113,30 @@ else:
     except Exception:
         pass
 
-    display_simulation_results(
-        tamarack_data, tamarack_results,
-        flatwing_data, flatwing_results,
-        v1_cut_enabled,
-        dep_lat, dep_lon, arr_lat, arr_lon,
-        distance_nm, bearing_deg,
-        winds_temps_source,
-        isa_dev,
-        (cruise_altitude_f if wing_type == "Flatwing" else cruise_altitude_t),
-        dep_airport_code,
-        arr_airport_code,
-        (fuel_f if wing_type == "Flatwing" else fuel_t),
-        report_output_dir=report_output_dir,
-        weight_df_flatwing=(weight_df_f if 'weight_df_f' in locals() else None),
-        weight_df_tamarack=(weight_df_t if 'weight_df_t' in locals() else None),
-        weight_df_single=(weight_df if 'weight_df' in locals() else None),
-        modes_summary_df=(modes_summary_df if 'modes_summary_df' in locals() else None),
-        fuel_cost_per_gal=fuel_cost_per_gal
-    )
-    
+    with main:
+        display_simulation_results(
+            tamarack_data, tamarack_results,
+            flatwing_data, flatwing_results,
+            v1_cut_enabled,
+            dep_lat, dep_lon, arr_lat, arr_lon,
+            distance_nm, bearing_deg,
+            winds_temps_source,
+            isa_dev,
+            (cruise_altitude_f if wing_type == "Flatwing" else cruise_altitude_t),
+            dep_airport_code,
+            arr_airport_code,
+            (fuel_f if wing_type == "Flatwing" else fuel_t),
+            report_output_dir=report_output_dir,
+            weight_df_flatwing=(weight_df_f if 'weight_df_f' in locals() else None),
+            weight_df_tamarack=(weight_df_t if 'weight_df_t' in locals() else None),
+            weight_df_single=(weight_df if 'weight_df' in locals() else None),
+            modes_summary_df=(modes_summary_df if 'modes_summary_df' in locals() else None),
+            fuel_cost_per_gal=fuel_cost_per_gal
+        )
+     
     # Display output file information (for all wing types)
-    st.markdown("---")
-    st.subheader('Output Files')
+    main.markdown("---")
+    main.subheader('Output Files')
     
     output_files = []
     
@@ -944,22 +1151,22 @@ else:
         output_files.append((f"{aircraft_model} Flatwing", flatwing_output_file))
     
     if output_files:
-        st.write("**Time history data files have been created:**")
+        main.write("**Time history data files have been created:**")
         for config_name, filepath in output_files:
-            st.success(f" {config_name}: `{filepath}`")
+            main.success(f" {config_name}: `{filepath}`")
             
         # Show directory information
         output_dir = os.path.dirname(output_files[0][1]) if output_files else "output"
-        st.info(f" All files saved in: `{output_dir}`")
-        st.markdown("**Downloads**")
-        dl_cols = st.columns(min(3, max(1, len(output_files))))
+        main.info(f" All files saved in: `{output_dir}`")
+        main.markdown("**Downloads**")
+        dl_cols = main.columns(min(3, max(1, len(output_files))))
         for i, (config_name, filepath) in enumerate(output_files):
             try:
                 with open(filepath, "rb") as f:
                     data = f.read()
                 filename = os.path.basename(filepath) or f"{config_name}.csv"
                 with dl_cols[i % len(dl_cols)]:
-                    st.download_button(
+                    main.download_button(
                         label=f"Download {config_name} CSV",
                         data=data,
                         file_name=filename,
@@ -982,7 +1189,7 @@ else:
                         if os.path.isfile(filepath):
                             zf.write(filepath, arcname=os.path.basename(filepath))
             zip_name = f"{os.path.basename(output_dir) or 'outputs'}.zip"
-            st.download_button(
+            main.download_button(
                 label="Download all outputs (zip)",
                 data=buf.getvalue(),
                 file_name=zip_name,
@@ -990,11 +1197,4 @@ else:
             )
         except Exception:
             pass
-        st.write("*Files contain simulation parameters sampled every 5 seconds*")
-
-
-
-
-
-
-
+        main.write("*Files contain simulation parameters sampled every 5 seconds*")
