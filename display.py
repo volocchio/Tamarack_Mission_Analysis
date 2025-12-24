@@ -67,12 +67,8 @@ def display_vspeeds(label: str, vspeeds_data: dict, phase: str = "Takeoff"):
     # If no V-speeds were displayed, show a warning with available keys
     if not any_displayed:
         st.warning(f"No valid V-speeds found for {phase}")
-    else:
-        pass
 
-def write_metrics_with_headings(results_dict, label):
-    
-    
+def write_metrics_with_headings(results_dict, label, route_distance_nm: float | None = None, time_history_df: pd.DataFrame | None = None):
     segment_definitions = {
         "Takeoff": {
             "start": "Takeoff Start Weight (lb)",
@@ -173,6 +169,28 @@ def write_metrics_with_headings(results_dict, label):
                 burn_lb = results_dict.get("Total Fuel Burned (lb)")
                 time_min = results_dict.get("Total Time (min)")
                 dist_nm = results_dict.get("Total Dist (NM)")
+                try:
+                    ground_nm = float(route_distance_nm) if route_distance_nm is not None else (float(dist_nm) if dist_nm is not None else None)
+                except Exception:
+                    ground_nm = None
+
+                air_nm = None
+                try:
+                    if time_history_df is not None and not time_history_df.empty:
+                        if 'Time (hr)' in time_history_df.columns and 'VKTAS (kts)' in time_history_df.columns:
+                            t_hr = pd.to_numeric(time_history_df['Time (hr)'], errors='coerce').to_numpy()
+                            vktas = pd.to_numeric(time_history_df['VKTAS (kts)'], errors='coerce').to_numpy()
+                            mask = np.isfinite(t_hr) & np.isfinite(vktas)
+                            t_hr = t_hr[mask]
+                            vktas = vktas[mask]
+                            if t_hr.size >= 2:
+                                order = np.argsort(t_hr)
+                                t_hr = t_hr[order]
+                                vktas = vktas[order]
+                                air_nm = float(np.trapz(vktas, t_hr))
+                except Exception:
+                    air_nm = None
+
                 if burn_lb is not None and time_min is not None:
                     tmin = float(time_min)
                     if tmin > 0:
@@ -181,11 +199,58 @@ def write_metrics_with_headings(results_dict, label):
                         st.write(f"PPH (lb/hr): {int(round(pph))} | GPH (gal/hr): {gph:.1f}")
                 if time_min is not None and dist_nm is not None:
                     tmin = float(time_min)
-                    dnm = float(dist_nm)
+                    try:
+                        dnm = float(ground_nm) if ground_nm is not None else float(dist_nm)
+                    except Exception:
+                        dnm = float(dist_nm)
                     if tmin > 0:
                         hours = tmin / 60.0
                         block_speed = dnm / hours
                         st.write(f"Block Speed (kt): {block_speed:.1f}")
+
+                try:
+                    if ground_nm is not None and ground_nm > 0:
+                        st.write(f"Ground Dist (NM): {ground_nm:,.1f}")
+                except Exception:
+                    pass
+                try:
+                    if air_nm is not None and air_nm > 0:
+                        st.write(f"Air Dist (NM): {air_nm:,.1f}")
+                except Exception:
+                    pass
+                try:
+                    if burn_lb is not None and ground_nm is not None and ground_nm > 0:
+                        b = float(burn_lb)
+                        if b > 0:
+                            st.write(f"Ground Specific Range (NM/lb): {float(ground_nm) / b:.4f}")
+                except Exception:
+                    pass
+                try:
+                    if burn_lb is not None and air_nm is not None and air_nm > 0:
+                        b = float(burn_lb)
+                        if b > 0:
+                            st.write(f"Air Specific Range (NM/lb): {float(air_nm) / b:.4f}")
+                except Exception:
+                    pass
+
+                try:
+                    if time_min is not None:
+                        tmin = float(time_min)
+                        if tmin > 0:
+                            hrs = tmin / 60.0
+                            if ground_nm is not None and air_nm is not None and air_nm > 0:
+                                gs = float(ground_nm) / hrs
+                                tas = float(air_nm) / hrs
+                                wind_comp = gs - tas
+                                if abs(wind_comp) < 0.5:
+                                    st.write("Average Wind Component (kt): 0.0")
+                                elif wind_comp > 0:
+                                    st.write(f"Average Wind Component (kt): {abs(wind_comp):.1f} tailwind")
+                                else:
+                                    st.write(f"Average Wind Component (kt): {abs(wind_comp):.1f} headwind")
+                except Exception:
+                    pass
+
             except Exception:
                 pass
 
@@ -193,6 +258,10 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
     st.subheader("Flight Profile Charts")
 
     figs = {}
+
+    if (tamarack_data is None or tamarack_data.empty) and (flatwing_data is None or flatwing_data.empty):
+        st.info("No valid flight profiles to plot.")
+        return figs
 
     def plot_dual_y(title, key_name, x, y1_label, y1_tam, y1_flat, y2_label, y2_tam, y2_flat):
         fig = go.Figure()
@@ -206,6 +275,9 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
                                      name=f"{y1_label} (Flatwing)", line=dict(color="purple")))
             fig.add_trace(go.Scatter(x=flatwing_data[x], y=flatwing_data[y2_flat],
                                      name=f"{y2_label} (Flatwing)", yaxis='y2', line=dict(color="red")))
+
+        if not fig.data:
+            return
 
         fig.update_layout(
             xaxis=dict(title=x, showgrid=True, gridcolor='LightGrey', gridwidth=1),
@@ -244,7 +316,6 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
                 "Altitude (ft)", "Altitude (ft)", "Altitude (ft)",
                 "Mach", "Mach", "Mach")
 
-    
     fig = go.Figure()
     if not tamarack_data.empty:
         if "Distance (NM)" in tamarack_data.columns and "Altitude (ft)" in tamarack_data.columns:
@@ -421,6 +492,31 @@ def display_simulation_results(
     modes_summary_df: pd.DataFrame | None = None,
     fuel_cost_per_gal: float | None = None
 ):
+    def _has_reserve_fuel_exceedance(results: dict) -> bool:
+        try:
+            ex = results.get('exceedances')
+            if not ex:
+                return False
+            for msg in ex:
+                if isinstance(msg, str) and 'Not enough reserve fuel at landing' in msg:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    plot_tamarack_data = tamarack_data
+    plot_flatwing_data = flatwing_data
+    try:
+        if isinstance(tamarack_results, dict) and _has_reserve_fuel_exceedance(tamarack_results):
+            plot_tamarack_data = pd.DataFrame()
+    except Exception:
+        pass
+    try:
+        if isinstance(flatwing_results, dict) and _has_reserve_fuel_exceedance(flatwing_results):
+            plot_flatwing_data = pd.DataFrame()
+    except Exception:
+        pass
+
     # Airports table (restored at top)
     try:
         airports_df = load_airports()
@@ -465,6 +561,11 @@ def display_simulation_results(
                 st.dataframe(airports_table.style.hide(axis='index'), use_container_width=True)
             except Exception:
                 st.table(airports_table)
+        try:
+            if distance_nm is not None and bearing_deg is not None:
+                st.success(f"Distance: {float(distance_nm):.1f} NM | Bearing: {float(bearing_deg):.1f}°")
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -629,21 +730,20 @@ def display_simulation_results(
         title='Flight Route'
     )
     st.plotly_chart(fig, use_container_width=True)
-    st.success(f"Distance: {distance_nm:.1f} NM | Bearing: {bearing_deg:.1f}°")
 
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("Tamarack")
         if not tamarack_data.empty:
-            write_metrics_with_headings(tamarack_results, "Tamarack")
+            write_metrics_with_headings(tamarack_results, "Tamarack", route_distance_nm=distance_nm, time_history_df=tamarack_data)
         else:
             st.info("No Tamarack results to display.")
 
     with col2:
         st.subheader("Flatwing")
         if not flatwing_data.empty:
-            write_metrics_with_headings(flatwing_results, "Flatwing")
+            write_metrics_with_headings(flatwing_results, "Flatwing", route_distance_nm=distance_nm, time_history_df=flatwing_data)
         else:
             st.info("No Flatwing results to display.")
 
@@ -651,47 +751,105 @@ def display_simulation_results(
     try:
         if isinstance(tamarack_results, dict) and isinstance(flatwing_results, dict):
             if tamarack_results.get("Total Fuel Burned (lb)") is not None and flatwing_results.get("Total Fuel Burned (lb)") is not None:
+                invalid_reasons = []
+                try:
+                    if _has_reserve_fuel_exceedance(flatwing_results):
+                        invalid_reasons.append("Flatwing did not meet reserve requirement at landing")
+                except Exception:
+                    pass
+                try:
+                    if _has_reserve_fuel_exceedance(tamarack_results):
+                        invalid_reasons.append("Tamarack did not meet reserve requirement at landing")
+                except Exception:
+                    pass
+
                 lb_per_gal = 6.7
                 t_burn_lb = float(tamarack_results.get("Total Fuel Burned (lb)", 0) or 0)
                 f_burn_lb = float(flatwing_results.get("Total Fuel Burned (lb)", 0) or 0)
                 t_time_min = float(tamarack_results.get("Total Time (min)", 0) or 0)
                 f_time_min = float(flatwing_results.get("Total Time (min)", 0) or 0)
-                t_hours = max(1e-6, t_time_min / 60.0)
-                f_hours = max(1e-6, f_time_min / 60.0)
-                savings_lb = f_burn_lb - t_burn_lb
-                savings_gal = savings_lb / lb_per_gal if lb_per_gal > 0 else 0.0
-                t_pph = t_burn_lb / t_hours
-                f_pph = f_burn_lb / f_hours
-                savings_pph = f_pph - t_pph
-                t_cost = None
-                f_cost = None
-                cost_savings = None
-                if fuel_cost_per_gal is not None:
-                    t_cost = (t_burn_lb / lb_per_gal) * float(fuel_cost_per_gal)
-                    f_cost = (f_burn_lb / lb_per_gal) * float(fuel_cost_per_gal)
-                    cost_savings = f_cost - t_cost
+
                 st.subheader("Comparison Savings")
                 rows = []
                 rows.append({
-                    "Metric": "Fuel Saved",
-                    "Value": f"{savings_lb:,.0f} lb ({savings_gal:,.1f} gal)"
+                    "Metric": "Assumption",
+                    "Value": "Savings assume Flatwing lands with required reserves"
                 })
-                rows.append({
-                    "Metric": "PPH Saved",
-                    "Value": f"{savings_pph:,.0f} lb/hr"
-                })
-                if t_cost is not None and f_cost is not None and cost_savings is not None:
-                    rows.append({"Metric": "Tamarack Fuel Cost", "Value": f"${t_cost:,.0f}"})
-                    rows.append({"Metric": "Flatwing Fuel Cost", "Value": f"${f_cost:,.0f}"})
-                    rows.append({"Metric": "Cost Savings", "Value": f"${cost_savings:,.0f}"})
-                st.table(pd.DataFrame(rows))
+                if invalid_reasons:
+                    try:
+                        reason = "; ".join([str(r) for r in invalid_reasons if r])
+                    except Exception:
+                        reason = "Reserve requirement not met"
+                    rows.append({
+                        "Metric": "Note",
+                        "Value": f"Conditional comparison ({reason})"
+                    })
+
+                if invalid_reasons:
+                    rows.append({"Metric": "Fuel Saved", "Value": "N/A"})
+                    rows.append({"Metric": "PPH Saved", "Value": "N/A"})
+                    st.table(pd.DataFrame(rows))
+                else:
+                    t_hours = max(1e-6, t_time_min / 60.0)
+                    f_hours = max(1e-6, f_time_min / 60.0)
+                    t_pph = t_burn_lb / t_hours
+                    f_pph = f_burn_lb / f_hours
+                    savings_lb = f_burn_lb - t_burn_lb
+                    savings_gal = savings_lb / lb_per_gal if lb_per_gal > 0 else 0.0
+                    savings_pph = f_pph - t_pph
+
+                    t_cost = None
+                    f_cost = None
+                    cost_savings = None
+                    if fuel_cost_per_gal is not None:
+                        t_cost = (t_burn_lb / lb_per_gal) * float(fuel_cost_per_gal)
+                        f_cost = (f_burn_lb / lb_per_gal) * float(fuel_cost_per_gal)
+                        cost_savings = f_cost - t_cost
+
+                    rows.append({
+                        "Metric": "Fuel Saved",
+                        "Value": f"{savings_lb:,.0f} lb ({savings_gal:,.1f} gal)"
+                    })
+                    rows.append({
+                        "Metric": "PPH Saved",
+                        "Value": f"{savings_pph:,.0f} lb/hr"
+                    })
+                    if t_cost is not None and f_cost is not None and cost_savings is not None:
+                        rows.append({"Metric": "Tamarack Fuel Cost", "Value": f"${t_cost:,.0f}"})
+                        rows.append({"Metric": "Flatwing Fuel Cost", "Value": f"${f_cost:,.0f}"})
+                        rows.append({"Metric": "Cost Savings", "Value": f"${cost_savings:,.0f}"})
+                    st.table(pd.DataFrame(rows))
     except Exception:
         pass
 
     for results in [tamarack_results, flatwing_results]:
         if results.get("exceedances"):
             for msg in results["exceedances"]:
-                st.error(msg)
+                try:
+                    if isinstance(msg, str) and 'Not enough reserve fuel at landing' in msg:
+                        st.markdown(
+                            """
+                            <div style="
+                                background:#ffe6e6;
+                                border:2px solid #cc0000;
+                                color:#990000;
+                                padding:12px 14px;
+                                border-radius:8px;
+                                font-weight:900;
+                                font-size:20px;
+                                letter-spacing:0.4px;
+                                line-height:1.25;
+                            ">
+                            """ + str(msg).upper() +
+                            """
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.error(msg)
+                except Exception:
+                    st.error(msg)
         elif results.get("error"):
             st.error(results["error"])
 
@@ -729,15 +887,15 @@ def display_simulation_results(
             return burns
         except Exception:
             return []
-    burns_t = _hourly_burns(tamarack_data)
-    burns_f = _hourly_burns(flatwing_data)
+    burns_t = _hourly_burns(plot_tamarack_data)
+    burns_f = _hourly_burns(plot_flatwing_data)
     if not burns_t and not burns_f:
         st.info("No time history available to compute hourly burn.")
     else:
+        rows = []
         try:
             if burns_t and burns_f:
                 n = max(len(burns_t), len(burns_f))
-                rows = []
                 for i in range(n):
                     rows.append({
                         'Hour': i + 1,
@@ -750,7 +908,6 @@ def display_simulation_results(
             else:
                 df_h = pd.DataFrame([{'Hour': i + 1, 'Flatwing (lb)': v} for i, v in enumerate(burns_f)])
 
-            # Hide index for hourly fuel burn summary
             try:
                 st.dataframe(df_h, use_container_width=True, hide_index=True)
             except TypeError:
@@ -818,7 +975,7 @@ def display_simulation_results(
                 df_display = df_display.reset_index(drop=True)
                 st.dataframe(df_display, use_container_width=True)
 
-    figs = plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results)
+    figs = plot_flight_profiles(plot_tamarack_data, plot_flatwing_data, tamarack_results, flatwing_results)
     # Add the route map to figs so it can be embedded in the PDF
     try:
         figs["route_map"] = fig

@@ -2,7 +2,12 @@
 import os
 from datetime import datetime
 
-import streamlit as st
+try:
+    import streamlit as st
+except ModuleNotFoundError:
+    class _NoStreamlit:
+        pass
+    st = _NoStreamlit()
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -320,8 +325,28 @@ def interpolate_winds_temps(altitude, winds_temps_data):
     lower_data = winds_temps_data[lower_alt]
     upper_data = winds_temps_data[upper_alt]
 
-    wind_dir = lower_data[0] + fraction * (upper_data[0] - lower_data[0])
-    wind_speed = lower_data[1] + fraction * (upper_data[1] - lower_data[1])
+    try:
+        d0 = float(lower_data[0])
+        s0 = float(lower_data[1])
+        d1 = float(upper_data[0])
+        s1 = float(upper_data[1])
+        d0r = np.deg2rad(d0)
+        d1r = np.deg2rad(d1)
+        u0 = -s0 * np.sin(d0r)
+        v0 = -s0 * np.cos(d0r)
+        u1 = -s1 * np.sin(d1r)
+        v1 = -s1 * np.cos(d1r)
+        u = u0 + fraction * (u1 - u0)
+        v = v0 + fraction * (v1 - v0)
+        wind_speed = float(np.sqrt(u * u + v * v))
+        if wind_speed <= 1e-9:
+            wind_dir = float(d0)
+        else:
+            wind_dir = float((np.rad2deg(np.arctan2(-u, -v)) + 360.0) % 360.0)
+    except Exception:
+        wind_dir = lower_data[0] + fraction * (upper_data[0] - lower_data[0])
+        wind_speed = lower_data[1] + fraction * (upper_data[1] - lower_data[1])
+
     temp = lower_data[2] + fraction * (upper_data[2] - lower_data[2])
 
     return wind_dir, wind_speed, temp
@@ -491,7 +516,7 @@ def run_simulation(
         dep_elev = dep_data['elevation_ft']
         arr_latitude = arr_data['latitude_deg']
         arr_longitude = arr_data['longitude_deg']
-        arr_elev = dep_data['elevation_ft']  # Assume same elevation for simplicity, or fix to arr_data
+        arr_elev = arr_data['elevation_ft']  # Use destination elevation
     except IndexError:
         return pd.DataFrame(), {"error": "Invalid airport code(s)."}, 0, 0, 0, 0, ""  # Return empty results if airport lookup fails
 
@@ -510,28 +535,59 @@ def run_simulation(
         cumulative_dist += dist
         point_distances.append(cumulative_dist)
 
-    # Placeholder winds and temps aloft data (wind direction in degrees, speed in knots, temp in Â°C)
+    try:
+        route_mid_lat = float((float(dep_latitude) + float(arr_latitude)) / 2.0)
+    except Exception:
+        route_mid_lat = 39.0
+
+    def _clamp(v, lo, hi):
+        try:
+            return max(float(lo), min(float(hi), float(v)))
+        except Exception:
+            return float(lo)
+
+    def _conus_climo_table(season: str, mid_lat: float) -> dict:
+        lat = _clamp(mid_lat, 25.0, 50.0)
+        lat_frac = (lat - 25.0) / (50.0 - 25.0)
+        if str(season).lower().startswith('winter'):
+            d180 = 255.0 + 20.0 * lat_frac
+            d300 = 260.0 + 25.0 * lat_frac
+            d390 = 265.0 + 25.0 * lat_frac
+            s180 = 25.0 + 25.0 * lat_frac
+            s300 = 45.0 + 55.0 * lat_frac
+            s390 = 50.0 + 60.0 * lat_frac
+            t180 = -25.0
+            t300 = -40.0
+            t390 = -50.0
+        else:
+            d180 = 255.0 + 10.0 * lat_frac
+            d300 = 255.0 + 15.0 * lat_frac
+            d390 = 255.0 + 15.0 * lat_frac
+            s180 = 15.0 + 15.0 * lat_frac
+            s300 = 25.0 + 25.0 * lat_frac
+            s390 = 30.0 + 25.0 * lat_frac
+            t180 = -10.0
+            t300 = -25.0
+            t390 = -30.0
+        return {
+            18000: (float(d180) % 360.0, float(s180), float(t180)),
+            30000: (float(d300) % 360.0, float(s300), float(t300)),
+            39000: (float(d390) % 360.0, float(s390), float(t390)),
+        }
+
     winds_temps_data = {
         "No Wind": {
-            18000: (0, 0, -20),  # FL180 - zero wind
-            30000: (0, 0, -35),  # FL300 - zero wind
-            39000: (0, 0, -45),  # FL390 - zero wind
+            18000: (0, 0, -20),
+            30000: (0, 0, -35),
+            39000: (0, 0, -45),
         },
         "Current Conditions": {
-            18000: (310, 30, -20),  # FL180
-            30000: (310, 40, -35),  # FL300
-            39000: (310, 50, -45),  # FL390
+            18000: (310, 30, -20),
+            30000: (310, 40, -35),
+            39000: (310, 50, -45),
         },
-        "Summer Average": {
-            18000: (270, 15, -10),
-            30000: (270, 20, -25),
-            39000: (270, 25, -30),
-        },
-        "Winter Average": {
-            18000: (320, 35, -25),
-            30000: (320, 45, -40),
-            39000: (320, 55, -50),
-        }
+        "Summer Average": _conus_climo_table("Summer", route_mid_lat),
+        "Winter Average": _conus_climo_table("Winter", route_mid_lat),
     }
     selected_winds_temps = winds_temps_data[winds_temps_source]
     # ISA deviation override (applied as an additive temperature delta each step)
@@ -794,6 +850,68 @@ def run_simulation(
         frac = (alt_ft - bias_alt_low) / span
         return low_frac + frac * (high_frac - low_frac)
 
+    def _knots_from_fps(v_fps: float) -> float:
+        return float(v_fps) * 3600.0 / 6076.12
+
+    def _vktas_from_kias(kias: float, sigma_val: float) -> float:
+        return float(kias) / np.sqrt(max(1e-6, float(sigma_val)))
+
+    def _gs_knots(vktas_knots: float, wind_comp_knots: float) -> float:
+        return max(30.0, float(vktas_knots) + float(wind_comp_knots))
+
+    def _segment_dist_nm_for_descent(delta_alt_ft: float, rod_fpm: float, gs_knots: float) -> float:
+        da = float(delta_alt_ft)
+        if da <= 0.0:
+            return 0.0
+        rate = abs(float(rod_fpm))
+        if rate <= 1e-6:
+            return float('inf')
+        t_hr = (da / rate) / 60.0
+        return float(gs_knots) * t_hr
+
+    def _required_nm_from_alt_to_land(alt_ft: float, sigma_val: float, wind_comp_knots: float, c_fps: float,
+                                      m_descent_val: float, v_u_10k_val: float, vapp_val: float, vref_val: float,
+                                      vktas_current_knots: float) -> float:
+        alt_local = float(alt_ft)
+        alt_land_local = float(alt_land)
+        req_nm = 0.0
+
+        if alt_local > 10000.0:
+            delta_alt = alt_local - 10000.0
+            try:
+                _, _, _sigma10, _delta10, _, c10 = atmos(10000.0, isa_diff)
+                _, _, _sigmamid, _deltamid, _, cmid = atmos((alt_local + 10000.0) * 0.5, isa_diff)
+                c_avg = (float(c_fps) + float(cmid) + float(c10)) / 3.0
+            except Exception:
+                c_avg = float(c_fps)
+            vktas_mach_est = _knots_from_fps(float(m_descent_val) * float(c_avg))
+            vktas_high = max(float(vktas_current_knots), float(vktas_mach_est), 150.0)
+            gs_high = _gs_knots(vktas_high, wind_comp_knots)
+            req_nm += _segment_dist_nm_for_descent(delta_alt, rod, gs_high)
+            alt_local = 10000.0
+
+        if alt_local > alt_land_local + 3000.0:
+            delta_alt = alt_local - (alt_land_local + 3000.0)
+            vktas_low = _vktas_from_kias(v_u_10k_val, sigma_val)
+            gs_low = _gs_knots(vktas_low, wind_comp_knots)
+            req_nm += _segment_dist_nm_for_descent(delta_alt, rod_u_10k, gs_low)
+            alt_local = alt_land_local + 3000.0
+
+        if alt_local > alt_land_local + 1000.0:
+            delta_alt = alt_local - (alt_land_local + 1000.0)
+            vktas_app = _vktas_from_kias(vapp_val, sigma_val)
+            gs_app = _gs_knots(vktas_app, wind_comp_knots)
+            req_nm += _segment_dist_nm_for_descent(delta_alt, rod_approach, gs_app)
+            alt_local = alt_land_local + 1000.0
+
+        if alt_local > alt_land_local:
+            delta_alt = alt_local - alt_land_local
+            vktas_fin = _vktas_from_kias(vref_val, sigma_val)
+            gs_fin = _gs_knots(vktas_fin, wind_comp_knots)
+            req_nm += _segment_dist_nm_for_descent(delta_alt, rod_approach, gs_fin)
+
+        return float(req_nm)
+
     while segment != 14:
         # Termination/guard conditions
         if range_mode:
@@ -1002,9 +1120,30 @@ def run_simulation(
         # Compute wind component affecting ground speed
         heading_rad = radians(bearing)
         wind_dir_rad = radians(wind_dir)
-        wind_component = wind_speed * cos(wind_dir_rad - heading_rad)  # Positive for tailwind, negative for headwind
+        wind_component = -wind_speed * cos(wind_dir_rad - heading_rad)  # Positive for tailwind, negative for headwind
 
         d_alt, _, sigma, delta, _, c = atmos(alt, isa_diff)
+
+        if segment == 10 and (not range_mode):
+            vapp_eff = float(vapp) if vapp is not None else 130.0
+            vref_eff = float(vref) if vref is not None else 120.0
+            req_nm_after_3000 = _required_nm_from_alt_to_land(float(alt_land) + 3000.0, sigma, wind_component, c, m_descent, v_u_10k, vapp_eff, vref_eff, vktas)
+            need_nm_seg10 = float(remaining_dist) - float(req_nm_after_3000)
+            delta_alt10 = max(0.0, float(alt) - (float(alt_land) + 3000.0))
+            if delta_alt10 > 1.0:
+                gs10 = _gs_knots(_vktas_from_kias(v_u_10k, sigma), wind_component)
+                if need_nm_seg10 > 0.05:
+                    rod_req_mag = (delta_alt10 * gs10) / (need_nm_seg10 * 60.0)
+                    roc_goal = -max(0.0, min(3000.0, rod_req_mag))
+                else:
+                    roc_goal = -3000.0
+
+        descent_required_nm = None
+        if (not range_mode) and segment in (6, 7) and alt > 10000:
+            vapp_eff = float(vapp) if vapp is not None else 130.0
+            vref_eff = float(vref) if vref is not None else 120.0
+            descent_required_nm = _required_nm_from_alt_to_land(alt, sigma, wind_component, c, m_descent, v_u_10k, vapp_eff, vref_eff, vktas)
+
         _, _, drag, _, _, vktas, v_true_fps, thrust_raw, drag_gnd, vkias, m = physics(
             t_inc,
             gamma,
@@ -1313,15 +1452,17 @@ def run_simulation(
             segment = 5
         if (abs(round(thrust - drag)) < 1 or m >= m_cruise or m >= mmo) and segment == 6:
             segment = 7
-        if (not range_mode) and segment in (6, 7) and remaining_dist <= descent_threshold and alt > 10000:
-            segment = 8
-            gamma = -0.01
-            fuel_start_descent = fob
-            t_start_descent = t
-            cruise_time = t - climb_time
-            cruise_dist = (dist_ft / 6076.12) - climb_dist
-            cruise_fuel = fuel_burned - climb_fuel
-            max_m_reached = max(max_m_reached, m)
+        if (not range_mode) and segment in (6, 7) and alt > 10000:
+            _thr = descent_required_nm if descent_required_nm is not None else descent_threshold
+            if remaining_dist <= _thr:
+                segment = 8
+                gamma = -0.01
+                fuel_start_descent = fob
+                t_start_descent = t
+                cruise_time = t - climb_time
+                cruise_dist = (dist_ft / 6076.12) - climb_dist
+                cruise_fuel = fuel_burned - climb_fuel
+                max_m_reached = max(max_m_reached, m)
         if v_descent is not None and vkias > v_descent and segment == 8:
             segment = 9
         if alt < 10000 and segment in (8, 9):
