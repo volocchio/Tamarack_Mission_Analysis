@@ -2,12 +2,24 @@
 import runpy
 import io
 import zipfile
+from datetime import datetime
 import streamlit as st
 import pandas as pd
 from aircraft_config import AIRCRAFT_CONFIG
 from utils import load_airports
-from simulation import run_simulation, haversine_with_bearing
+from simulation import run_simulation as _run_simulation, haversine_with_bearing
 from display import display_simulation_results
+
+
+def run_simulation(*args, **kwargs):
+    try:
+        return _run_simulation(*args, **kwargs)
+    except Exception as e:
+        try:
+            st.error(f"Simulation failed: {e}")
+        except Exception:
+            pass
+        return pd.DataFrame(), {'error': str(e)}, 0.0, 0.0, 0.0, 0.0, ""
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Flight Simulation App", layout="wide")
@@ -442,9 +454,17 @@ with st.sidebar:
     takeoff_flap = 1 if flap_option == "Flaps 15" else 0
 
     # Winds and temps source
-    winds_temps_source = st.radio("Winds and Temps Aloft Source", 
-                                ["No Wind", "Current Conditions", "Summer Average", "Winter Average"], 
-                                index=0)  # Default to "No Wind"
+    try:
+        if st.session_state.get("winds_temps_source") in ("Current Conditions", "Monthly Climatology"):
+            st.session_state["winds_temps_source"] = "No Wind"
+    except Exception:
+        pass
+    winds_temps_source = st.radio(
+        "Winds and Temps Aloft Source",
+        ["No Wind", "Summer Average", "Winter Average"],
+        index=0,
+        key="winds_temps_source",
+    )
 
     # ISA deviation
     isa_dev = int(st.number_input("ISA Deviation (C)", value=0.0, step=1.0))

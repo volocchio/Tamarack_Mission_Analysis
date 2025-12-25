@@ -589,7 +589,13 @@ def run_simulation(
         "Summer Average": _conus_climo_table("Summer", route_mid_lat),
         "Winter Average": _conus_climo_table("Winter", route_mid_lat),
     }
-    selected_winds_temps = winds_temps_data[winds_temps_source]
+    # Safety: these modes are experimental/disabled in the UI; fall back if passed in.
+    try:
+        if winds_temps_source in ("Current Conditions", "Monthly Climatology"):
+            winds_temps_source = "No Wind"
+    except Exception:
+        winds_temps_source = "No Wind"
+    selected_winds_temps = winds_temps_data.get(winds_temps_source, winds_temps_data["No Wind"])
     # ISA deviation override (applied as an additive temperature delta each step)
     isa_dev_c_opt = 0.0
     try:

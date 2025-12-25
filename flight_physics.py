@@ -71,14 +71,52 @@ def thrust_calc(d_alt, m, thrust_mult, engines, thrust_factor, segment):
 
 
 def drag_calc(w, cdo, dcdo_flap1, dcdo_flap2, dcdo_flap3, dcdo_gear, m, k, cl, q, s, segment, flap):
-    if m > 0.5:
-        cdnp = (6.667 * m ** 4 - 15.733 * m ** 3 + 13.923 * m ** 2 - 5.464 * m + 0.8012) * (exp(6 * cl ** 2) / 4)
-    else:
-        cdnp = 0
+    try:
+        _m = float(m)
+    except Exception:
+        _m = 0.0
+    if not np.isfinite(_m):
+        _m = 0.0
+    if _m < 0.0:
+        _m = 0.0
+    if _m > 1.5:
+        _m = 1.5
+
+    try:
+        _cl = float(cl)
+    except Exception:
+        _cl = 0.0
+    if not np.isfinite(_cl):
+        _cl = 0.0
+    if _cl > 50.0:
+        _cl = 50.0
+    if _cl < -50.0:
+        _cl = -50.0
+
+    cdnp = 0.0
+    if _m > 0.5:
+        try:
+            _exp_arg = 6.0 * (_cl * _cl)
+            if not np.isfinite(_exp_arg):
+                _exp_arg = 50.0
+            if _exp_arg > 50.0:
+                _exp_arg = 50.0
+            if _exp_arg < -50.0:
+                _exp_arg = -50.0
+            _exp_val = exp(_exp_arg)
+            cdnp = (6.667 * _m ** 4 - 15.733 * _m ** 3 + 13.923 * _m ** 2 - 5.464 * _m + 0.8012) * (_exp_val / 4.0)
+        except Exception:
+            cdnp = 0.0
     if segment in [0, 13]:
         cdi = 0
     else:
-        cdi = k * cl ** 2
+        try:
+            _k = float(k)
+        except Exception:
+            _k = 0.0
+        if not np.isfinite(_k):
+            _k = 0.0
+        cdi = _k * (_cl * _cl)
     if segment == 0:
         cd = cdo + cdi
     elif segment == 2:

@@ -855,19 +855,91 @@ def display_simulation_results(
 
     # Hourly Fuel Burn Summary (moved before Flight Profile Charts)
     st.subheader("Hourly Fuel Burn Summary")
-    def _hourly_burns(df: pd.DataFrame) -> list[int]:
+    def _hourly_burns(df: pd.DataFrame, results: dict | None = None) -> list[dict]:
         try:
             if df is None or df.empty:
                 return []
-            if 'Time (hr)' not in df.columns or 'Fuel Remaining (lb)' not in df.columns:
+            if 'Fuel Remaining (lb)' not in df.columns:
                 return []
-            t = pd.to_numeric(df['Time (hr)'], errors='coerce')
+
+            def _pick_time_hours() -> pd.Series | None:
+                try:
+                    t_expected_hr = None
+                    try:
+                        if isinstance(results, dict) and results.get('Total Time (min)') is not None:
+                            t_expected_hr = float(results.get('Total Time (min)')) / 60.0
+                    except Exception:
+                        t_expected_hr = None
+
+                    cand = []
+                    if 'Time (hr)' in df.columns:
+                        t1 = pd.to_numeric(df['Time (hr)'], errors='coerce')
+                        cand.append(('hr', t1))
+                    if 'Time (s)' in df.columns:
+                        t2s = pd.to_numeric(df['Time (s)'], errors='coerce')
+                        t2 = t2s / 3600.0
+                        cand.append(('s', t2))
+                    if not cand:
+                        return None
+
+                    # If we have an expected duration, pick the candidate whose max is closest.
+                    if t_expected_hr is not None and t_expected_hr > 0:
+                        best = None
+                        best_err = None
+                        for _, series in cand:
+                            try:
+                                mx = float(np.nanmax(series.to_numpy()))
+                                if not np.isfinite(mx) or mx <= 0:
+                                    continue
+                                err = abs(mx - t_expected_hr)
+                                if best_err is None or err < best_err:
+                                    best_err = err
+                                    best = series
+                            except Exception:
+                                continue
+                        if best is not None:
+                            return best
+
+                    # Fallback: prefer Time (hr) if it looks like hours (not huge)
+                    for tag, series in cand:
+                        try:
+                            mx = float(np.nanmax(series.to_numpy()))
+                        except Exception:
+                            mx = None
+                        if mx is not None and np.isfinite(mx) and 0.0 < mx < 100.0:
+                            return series
+                    return cand[0][1]
+                except Exception:
+                    return None
+
+            t_series = _pick_time_hours()
+            if t_series is None:
+                return []
+            t = pd.to_numeric(t_series, errors='coerce')
             f = pd.to_numeric(df['Fuel Remaining (lb)'], errors='coerce')
             mask = t.notna() & f.notna()
             t = t[mask].to_numpy()
             f = f[mask].to_numpy()
             if t.size == 0:
                 return []
+
+            t_lo = None
+            try:
+                if 'Flight Phase' in df.columns:
+                    ph = df.loc[mask, 'Flight Phase']
+                    ph = ph.astype(str)
+                    cruise_mask = ph.str.lower().eq('cruise')
+                    if cruise_mask.any():
+                        t_lo = float(np.nanmin(t[cruise_mask.to_numpy()]))
+                elif 'Segment' in df.columns:
+                    seg = pd.to_numeric(df.loc[mask, 'Segment'], errors='coerce')
+                    seg = seg.to_numpy()
+                    cruise_mask = np.isfinite(seg) & np.isin(seg.astype(int), [4, 5, 6, 7])
+                    if np.any(cruise_mask):
+                        t_lo = float(np.nanmin(t[cruise_mask]))
+            except Exception:
+                t_lo = None
+
             t_max = float(np.nanmax(t))
             if t_max <= 0:
                 return []
@@ -883,41 +955,96 @@ def display_simulation_results(
                     continue
                 start_f = float(np.interp(start_t, t, f))
                 end_f = float(np.interp(end_t, t, f))
-                burns.append(int(max(0.0, start_f - end_f)))
+                total = int(max(0.0, start_f - end_f))
+                climb = None
+                cruise = None
+                if h == 0:
+                    try:
+                        _climb_fuel = None
+                        try:
+                            if isinstance(results, dict):
+                                _climb_fuel = results.get('Climb Fuel (lb)')
+                        except Exception:
+                            _climb_fuel = None
+
+                        if _climb_fuel is not None:
+                            _cf = float(_climb_fuel)
+                            if np.isfinite(_cf):
+                                climb = int(max(0.0, min(float(total), _cf)))
+                                cruise = int(max(0.0, float(total) - float(climb)))
+                            else:
+                                _climb_fuel = None
+
+                        if _climb_fuel is None:
+                            if t_lo is None or (not np.isfinite(float(t_lo))):
+                                climb = total
+                                cruise = 0
+                            else:
+                                t_split = float(max(start_t, min(end_t, float(t_lo))))
+                                if t_split <= start_t:
+                                    climb = 0
+                                    cruise = total
+                                elif t_split >= end_t:
+                                    climb = total
+                                    cruise = 0
+                                else:
+                                    f_split = float(np.interp(t_split, t, f))
+                                    climb = int(max(0.0, start_f - f_split))
+                                    cruise = int(max(0.0, f_split - end_f))
+                    except Exception:
+                        climb = total
+                        cruise = 0
+
+                burns.append({'total': total, 'climb': climb, 'cruise': cruise})
             return burns
         except Exception:
             return []
-    burns_t = _hourly_burns(plot_tamarack_data)
-    burns_f = _hourly_burns(plot_flatwing_data)
+    burns_t = _hourly_burns(plot_tamarack_data, tamarack_results if isinstance(tamarack_results, dict) else None)
+    burns_f = _hourly_burns(plot_flatwing_data, flatwing_results if isinstance(flatwing_results, dict) else None)
     if not burns_t and not burns_f:
         st.info("No time history available to compute hourly burn.")
     else:
-        rows = []
-        try:
-            if burns_t and burns_f:
-                n = max(len(burns_t), len(burns_f))
-                for i in range(n):
-                    rows.append({
-                        'Hour': i + 1,
-                        'Tamarack (lb)': (burns_t[i] if i < len(burns_t) else None),
-                        'Flatwing (lb)': (burns_f[i] if i < len(burns_f) else None)
-                    })
-                df_h = pd.DataFrame(rows)
-            elif burns_t:
-                df_h = pd.DataFrame([{'Hour': i + 1, 'Tamarack (lb)': v} for i, v in enumerate(burns_t)])
-            else:
-                df_h = pd.DataFrame([{'Hour': i + 1, 'Flatwing (lb)': v} for i, v in enumerate(burns_f)])
-
+        def _burns_to_df(burns: list[dict], prefix: str) -> pd.DataFrame:
             try:
-                st.dataframe(df_h, use_container_width=True, hide_index=True)
+                rows = []
+                for i, v in enumerate(burns or []):
+                    if not isinstance(v, dict):
+                        continue
+                    row = {
+                        'Hour': i + 1,
+                        f'{prefix} Total (lb)': v.get('total'),
+                    }
+                    if i == 0:
+                        row[f'{prefix} Climb (lb)'] = v.get('climb')
+                        row[f'{prefix} Cruise (lb)'] = v.get('cruise')
+                    rows.append(row)
+                return pd.DataFrame(rows)
+            except Exception:
+                return pd.DataFrame()
+
+        def _render_df(df_show: pd.DataFrame):
+            try:
+                st.dataframe(df_show, use_container_width=True, hide_index=True)
             except TypeError:
                 try:
-                    st.dataframe(df_h.style.hide(axis='index'), use_container_width=True)
+                    st.dataframe(df_show.style.hide(axis='index'), use_container_width=True)
                 except Exception:
-                    df_h = df_h.reset_index(drop=True)
-                    st.dataframe(df_h, use_container_width=True)
-        except Exception:
-            st.table(pd.DataFrame(rows))
+                    df_show = df_show.reset_index(drop=True)
+                    st.dataframe(df_show, use_container_width=True)
+
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**Tamarack**")
+            if burns_t:
+                _render_df(_burns_to_df(burns_t, 'Tamarack'))
+            else:
+                st.info("No Tamarack time history available.")
+        with right:
+            st.markdown("**Flatwing**")
+            if burns_f:
+                _render_df(_burns_to_df(burns_f, 'Flatwing'))
+            else:
+                st.info("No Flatwing time history available.")
 
     if modes_summary_df is not None and isinstance(modes_summary_df, pd.DataFrame) and not modes_summary_df.empty:
         st.subheader("Cruise Mode Summary")
@@ -1367,39 +1494,153 @@ def display_simulation_results(
                 c.showPage(); y = height - 40
 
             # Hourly Fuel Burn table (mirror UI)
-            def hourly_burns(df: pd.DataFrame) -> list[int]:
+            def hourly_burns(df: pd.DataFrame, results: dict | None = None) -> list[dict]:
                 try:
                     if df is None or df.empty:
                         return []
-                    if 'Time (hr)' not in df.columns or 'Fuel Remaining (lb)' not in df.columns:
+                    if 'Fuel Remaining (lb)' not in df.columns:
                         return []
-                    t = pd.to_numeric(df['Time (hr)'], errors='coerce')
+
+                    def _pick_time_hours() -> pd.Series | None:
+                        try:
+                            t_expected_hr = None
+                            try:
+                                if isinstance(results, dict) and results.get('Total Time (min)') is not None:
+                                    t_expected_hr = float(results.get('Total Time (min)')) / 60.0
+                            except Exception:
+                                t_expected_hr = None
+
+                            cand = []
+                            if 'Time (hr)' in df.columns:
+                                t1 = pd.to_numeric(df['Time (hr)'], errors='coerce')
+                                cand.append(('hr', t1))
+                            if 'Time (s)' in df.columns:
+                                t2s = pd.to_numeric(df['Time (s)'], errors='coerce')
+                                t2 = t2s / 3600.0
+                                cand.append(('s', t2))
+                            if not cand:
+                                return None
+
+                            # If we have an expected duration, pick the candidate whose max is closest.
+                            if t_expected_hr is not None and t_expected_hr > 0:
+                                best = None
+                                best_err = None
+                                for _, series in cand:
+                                    try:
+                                        mx = float(np.nanmax(series.to_numpy()))
+                                        if not np.isfinite(mx) or mx <= 0:
+                                            continue
+                                        err = abs(mx - t_expected_hr)
+                                        if best_err is None or err < best_err:
+                                            best_err = err
+                                            best = series
+                                    except Exception:
+                                        continue
+                                if best is not None:
+                                    return best
+
+                            # Fallback: prefer Time (hr) if it looks like hours (not huge)
+                            for tag, series in cand:
+                                try:
+                                    mx = float(np.nanmax(series.to_numpy()))
+                                except Exception:
+                                    mx = None
+                                if mx is not None and np.isfinite(mx) and 0.0 < mx < 100.0:
+                                    return series
+                            return cand[0][1]
+                        except Exception:
+                            return None
+
+                    t_series = _pick_time_hours()
+                    if t_series is None:
+                        return []
+                    t = pd.to_numeric(t_series, errors='coerce')
                     f = pd.to_numeric(df['Fuel Remaining (lb)'], errors='coerce')
                     mask = t.notna() & f.notna()
                     t = t[mask].to_numpy()
                     f = f[mask].to_numpy()
                     if t.size == 0:
                         return []
+
+                    t_lo = None
+                    try:
+                        if 'Flight Phase' in df.columns:
+                            ph = df.loc[mask, 'Flight Phase']
+                            ph = ph.astype(str)
+                            cruise_mask = ph.str.lower().eq('cruise')
+                            if cruise_mask.any():
+                                t_lo = float(np.nanmin(t[cruise_mask.to_numpy()]))
+                        elif 'Segment' in df.columns:
+                            seg = pd.to_numeric(df.loc[mask, 'Segment'], errors='coerce')
+                            seg = seg.to_numpy()
+                            cruise_mask = np.isfinite(seg) & np.isin(seg.astype(int), [4, 5, 6, 7])
+                            if np.any(cruise_mask):
+                                t_lo = float(np.nanmin(t[cruise_mask]))
+                    except Exception:
+                        t_lo = None
+
                     t_max = float(np.nanmax(t))
                     if t_max <= 0:
                         return []
                     hours = int(np.ceil(t_max))
                     order = np.argsort(t)
-                    t = t[order]; f = f[order]
+                    t = t[order]
+                    f = f[order]
                     burns = []
                     for h in range(hours):
-                        start_t = float(h); end_t = float(min(h + 1, t_max))
+                        start_t = float(h)
+                        end_t = float(min(h + 1, t_max))
                         if end_t <= start_t:
                             continue
                         start_f = float(np.interp(start_t, t, f))
                         end_f = float(np.interp(end_t, t, f))
-                        burns.append(int(max(0.0, start_f - end_f)))
+                        total = int(max(0.0, start_f - end_f))
+                        climb = None
+                        cruise = None
+                        if h == 0:
+                            try:
+                                _climb_fuel = None
+                                try:
+                                    if isinstance(results, dict):
+                                        _climb_fuel = results.get('Climb Fuel (lb)')
+                                except Exception:
+                                    _climb_fuel = None
+
+                                if _climb_fuel is not None:
+                                    _cf = float(_climb_fuel)
+                                    if np.isfinite(_cf):
+                                        climb = int(max(0.0, min(float(total), _cf)))
+                                        cruise = int(max(0.0, float(total) - float(climb)))
+                                    else:
+                                        _climb_fuel = None
+
+                                if _climb_fuel is None:
+                                    if t_lo is None or (not np.isfinite(float(t_lo))):
+                                        climb = total
+                                        cruise = 0
+                                    else:
+                                        t_split = float(max(start_t, min(end_t, float(t_lo))))
+                                        if t_split <= start_t:
+                                            climb = 0
+                                            cruise = total
+                                        elif t_split >= end_t:
+                                            climb = total
+                                            cruise = 0
+                                        else:
+                                            f_split = float(np.interp(t_split, t, f))
+                                            climb = int(max(0.0, start_f - f_split))
+                                            cruise = int(max(0.0, f_split - end_f))
+                            except Exception:
+                                climb = total
+                                cruise = 0
+
+                        burns.append({'total': total, 'climb': climb, 'cruise': cruise})
                     return burns
                 except Exception:
                     return []
 
-            burns_t = hourly_burns(tamarack_data)
-            burns_f = hourly_burns(flatwing_data)
+            burns_t = hourly_burns(tamarack_data, tamarack_results if isinstance(tamarack_results, dict) else None)
+            burns_f = hourly_burns(flatwing_data, flatwing_results if isinstance(flatwing_results, dict) else None)
             c.setFont("Helvetica-Bold", 12)
             c.drawString(40, y, "Hourly Fuel Burn (lb)")
             y -= 16
@@ -1420,8 +1661,18 @@ def display_simulation_results(
                     c.drawString(50, y, "Hour"); c.drawString(110, y, "Tamarack (lb)"); c.drawString(230, y, "Flatwing (lb)")
                     y -= 12; c.setFont("Helvetica", 10)
                 c.drawString(50, y, str(i+1))
-                if i < len(burns_t): c.drawString(110, y, str(burns_t[i]))
-                if i < len(burns_f): c.drawString(230, y, str(burns_f[i]))
+                if i < len(burns_t):
+                    _v = burns_t[i]
+                    if i == 0 and isinstance(_v, dict):
+                        c.drawString(110, y, f"{_v.get('climb', 0)}/{_v.get('cruise', 0)}/{_v.get('total', 0)}")
+                    else:
+                        c.drawString(110, y, str(_v.get('total') if isinstance(_v, dict) else _v))
+                if i < len(burns_f):
+                    _v = burns_f[i]
+                    if i == 0 and isinstance(_v, dict):
+                        c.drawString(230, y, f"{_v.get('climb', 0)}/{_v.get('cruise', 0)}/{_v.get('total', 0)}")
+                    else:
+                        c.drawString(230, y, str(_v.get('total') if isinstance(_v, dict) else _v))
                 y -= 12
 
             # Plots at the end (like UI order)
