@@ -1209,7 +1209,7 @@ def run_simulation(
         roc_fpm = roc_fps * 60
         gradient = tan(gamma) * 100 if gamma != 0 else 0  # Calculate gradient at each step
 
-        if segment in (3, 4, 5) and alt > alt_goal:
+        if segment in (3, 4, 5) and alt >= alt_goal:
             segment = 6
 
         if alt - alt_to >= 35 and segment in (1, 2) and to_flag == 0:
@@ -1318,7 +1318,11 @@ def run_simulation(
         v_true_fps_wind = wind_component * 6076.12 / 3600  # Convert knots to ft/s
         dist_ft += (v_true_fps + v_true_fps_wind) * t_inc
         remaining_dist = total_dist - dist_ft / 6076.12
-        alt += roc_fps * t_inc
+        alt_next = alt + roc_fps * t_inc
+        if segment in (3, 4, 5) and roc_fps > 0 and alt < alt_goal and alt_next > alt_goal:
+            alt = alt_goal
+        else:
+            alt = alt_next
         t += t_inc
         # Adjust SFC with bias before computing fuel burn
         sfc_effective = sfc * (1.0 + sfc_bias_frac)

@@ -298,6 +298,29 @@ if run_clicked:
 # Results area
 summary_df: pd.DataFrame | None = st.session_state.get("batch_summary")
 if summary_df is not None and len(summary_df) > 0:
+    # Batch output location + plot export diagnostics (best-effort)
+    try:
+        out_dir = None
+        try:
+            out_dir = summary_df.attrs.get("output_dir")
+        except Exception:
+            out_dir = None
+        if out_dir:
+            st.caption(f"Batch outputs written under: {out_dir}")
+            try:
+                import os
+                err_path = os.path.join(str(out_dir), "summary_plot_export_errors.txt")
+                if os.path.exists(err_path):
+                    with open(err_path, "r", encoding="utf-8") as f:
+                        err_txt = f.read().strip()
+                    if err_txt:
+                        st.warning("Some summary plot exports failed (often missing Kaleido). See details below.")
+                        st.code(err_txt)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     elapsed_sec = st.session_state.get("batch_elapsed_sec", None)
     if elapsed_sec is not None and elapsed_sec > 0:
         minutes = elapsed_sec / 60.0

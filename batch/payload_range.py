@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from itertools import product
+import traceback
 
 import numpy as np
 import pandas as pd
@@ -58,6 +59,23 @@ def payload_sweep(max_payload_lb: float, num_steps: int) -> list[int]:
         vals.append(0)
     
     return vals
+
+
+def _write_plot_file(fig, out_path: Path, width: int, height: int, scale: int) -> tuple[bool, str | None, Path | None]:
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    try:
+        fig.write_image(str(out_path), width=int(width), height=int(height), scale=int(scale))
+        return True, None, out_path
+    except Exception as e:
+        try:
+            html_path = out_path.with_suffix(".html")
+            fig.write_html(str(html_path), include_plotlyjs="cdn")
+            return False, str(e), html_path
+        except Exception:
+            return False, str(e), None
 
 
 def compute_initial_fuel(
@@ -278,8 +296,10 @@ def run_single_case(case: dict, hide_mach_limited: bool = False, hide_altitude_l
             try:
                 fig = results["fuel_distance_plot"]
                 plot_path: Path = case["plot_path"]
-                plot_path.parent.mkdir(parents=True, exist_ok=True)
-                fig.write_image(str(plot_path), width=1600, height=900, scale=2)
+                ok, err, written_path = _write_plot_file(fig, plot_path, width=1600, height=900, scale=2)
+                if (not ok) and err:
+                    out["status"] = "plot_error" if out["status"] == "ok" else out["status"]
+                    out["plot_error_message"] = f"{err}; wrote {str(written_path) if written_path else 'nothing'}"
             except Exception as e:
                 out["status"] = "plot_error" if out["status"] == "ok" else out["status"]
                 out["plot_error_message"] = str(e)
@@ -328,6 +348,7 @@ def run_payload_range_batch(
 ) -> pd.DataFrame:
     base_ts_dir = Path(output_dir) if output_dir else Path("batch_outputs") / datetime.now().strftime("%Y%m%d_%H%M%S")
     base_ts_dir.mkdir(parents=True, exist_ok=True)
+    summary_plot_export_errors: list[str] = []
     
     # Create separate directories for each aircraft model
     aircraft_dirs = {}
@@ -594,6 +615,10 @@ def run_payload_range_batch(
             for aircraft in sorted(df["aircraft"].dropna().unique()):
                 df_a = df[df["aircraft"]==aircraft]
                 aircraft_summary_dir = aircraft_dirs[aircraft]["summary_plots"]
+                try:
+                    aircraft_summary_dir.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
 
                 for alt in sorted(df_a["cruise_alt"].dropna().unique(), reverse=True):
                     if cruise_mode in ("Max Range", "Max Endurance"):
@@ -687,7 +712,11 @@ def run_payload_range_batch(
                             if cruise_mode == "Max Endurance" else
                             aircraft_summary_dir / f"payload_range_{aircraft}_alt{int(alt)}_optimized.png"
                         )
-                        fig.write_image(str(fname), width=1400, height=900, scale=2)
+                        ok, err, written_path = _write_plot_file(fig, fname, width=1400, height=900, scale=2)
+                        if (not ok) and err:
+                            summary_plot_export_errors.append(
+                                f"{aircraft} alt={int(alt)} mode=optimized target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                            )
                     elif cruise_mode == "Speed Sweep (Mach/IAS)":
                         # Speed Sweep: facet by Mach as before
                         for mach in sorted(df_a["mach"].dropna().unique(), reverse=True):
@@ -757,7 +786,11 @@ def run_payload_range_batch(
                             )
                             fig.update_xaxes(rangemode="tozero")
                             fname = aircraft_summary_dir / f"payload_range_{aircraft}_alt{int(alt)}_mach{mach:.2f}.png"
-                            fig.write_image(str(fname), width=1400, height=900, scale=2)
+                            ok, err, written_path = _write_plot_file(fig, fname, width=1400, height=900, scale=2)
+                            if (not ok) and err:
+                                summary_plot_export_errors.append(
+                                    f"{aircraft} alt={int(alt)} mach={float(mach):.2f} target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                                )
                     else:
                         # MCT: no speed facet; mirror optimized behavior but without 'Optimized' in filename
                         df_filtered = df_a[df_a["cruise_alt"]==alt]
@@ -833,7 +866,11 @@ def run_payload_range_batch(
                         )
                         fig.update_xaxes(rangemode="tozero")
                         fname = aircraft_summary_dir / f"payload_range_{aircraft}_alt{int(alt)}_mct.png"
-                        fig.write_image(str(fname), width=1400, height=900, scale=2)
+                        ok, err, written_path = _write_plot_file(fig, fname, width=1400, height=900, scale=2)
+                        if (not ok) and err:
+                            summary_plot_export_errors.append(
+                                f"{aircraft} alt={int(alt)} mode=mct target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                            )
             # MCT mode: Save both Range vs Altitude and Endurance vs Altitude (payload=0)
             if cruise_mode == "MCT (Max Thrust)":
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
@@ -886,7 +923,12 @@ def run_payload_range_batch(
                                     ), size=6)
                                 ))
                         fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title=y_label, template="plotly_white")
-                        fig.write_image(str(aircraft_summary_dir / out_name), width=1600, height=900, scale=2)
+                        fname = aircraft_summary_dir / out_name
+                        ok, err, written_path = _write_plot_file(fig, fname, width=1600, height=900, scale=2)
+                        if (not ok) and err:
+                            summary_plot_export_errors.append(
+                                f"{aircraft} mode=mct family target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                            )
                     # Range vs Altitude (MCT)
                     _plot_altitude_family(
                         y_col="total_dist_nm",
@@ -952,7 +994,12 @@ def run_payload_range_batch(
                                     ), size=6)
                                 ))
                         fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title=y_label, template="plotly_white")
-                        fig.write_image(str(aircraft_summary_dir / out_name), width=1600, height=900, scale=2)
+                        fname = aircraft_summary_dir / out_name
+                        ok, err, written_path = _write_plot_file(fig, fname, width=1600, height=900, scale=2)
+                        if (not ok) and err:
+                            summary_plot_export_errors.append(
+                                f"{aircraft} mode=optimized family target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                            )
                     # Range vs Altitude (Optimized)
                     _plot_opt_family(
                         y_col="total_dist_nm",
@@ -1019,7 +1066,12 @@ def run_payload_range_batch(
                             yaxis_title="Range (NM)",
                             template="plotly_white"
                         )
-                        fig.write_image(str(aircraft_summary_dir / f"range_vs_mach_{aircraft}_FL{int(alt/100)}.png"), width=1600, height=900, scale=2)
+                        fname = aircraft_summary_dir / f"range_vs_mach_{aircraft}_FL{int(alt/100)}.png"
+                        ok, err, written_path = _write_plot_file(fig, fname, width=1600, height=900, scale=2)
+                        if (not ok) and err:
+                            summary_plot_export_errors.append(
+                                f"{aircraft} family range_vs_mach target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                            )
             if cruise_mode == "Speed Sweep (Mach/IAS)":
                 # Family: Endurance vs Mach by Altitude (payload 0)
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
@@ -1064,7 +1116,12 @@ def run_payload_range_batch(
                             yaxis_title="Endurance (min)",
                             template="plotly_white"
                         )
-                        fig.write_image(str(aircraft_summary_dir / f"endurance_vs_mach_{aircraft}_FL{int(alt/100)}.png"), width=1600, height=900, scale=2)
+                        fname = aircraft_summary_dir / f"endurance_vs_mach_{aircraft}_FL{int(alt/100)}.png"
+                        ok, err, written_path = _write_plot_file(fig, fname, width=1600, height=900, scale=2)
+                        if (not ok) and err:
+                            summary_plot_export_errors.append(
+                                f"{aircraft} family endurance_vs_mach target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                            )
             
             if cruise_mode == "Speed Sweep (Mach/IAS)":
                 # Family: Range vs Altitude by Mach (payload 0)
@@ -1114,7 +1171,12 @@ def run_payload_range_batch(
                             yaxis_title="Range (NM)",
                             template="plotly_white"
                         )
-                        fig.write_image(str(aircraft_summary_dir / f"range_vs_altitude_{aircraft}_M{mach:.2f}.png"), width=1600, height=900, scale=2)
+                        fname = aircraft_summary_dir / f"range_vs_altitude_{aircraft}_M{mach:.2f}.png"
+                        ok, err, written_path = _write_plot_file(fig, fname, width=1600, height=900, scale=2)
+                        if (not ok) and err:
+                            summary_plot_export_errors.append(
+                                f"{aircraft} family range_vs_altitude target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                            )
             if cruise_mode == "Speed Sweep (Mach/IAS)":
                 # Family: Endurance vs Altitude by Mach (payload 0)
                 for aircraft in sorted(df["aircraft"].dropna().unique()):
@@ -1163,9 +1225,19 @@ def run_payload_range_batch(
                             yaxis_title="Endurance (min)",
                             template="plotly_white"
                         )
-                        fig.write_image(str(aircraft_summary_dir / f"endurance_vs_altitude_{aircraft}_M{mach:.2f}.png"), width=1600, height=900, scale=2)
+                        fname = aircraft_summary_dir / f"endurance_vs_altitude_{aircraft}_M{mach:.2f}.png"
+                        ok, err, written_path = _write_plot_file(fig, fname, width=1600, height=900, scale=2)
+                        if (not ok) and err:
+                            summary_plot_export_errors.append(
+                                f"{aircraft} family endurance_vs_altitude target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                            )
         except Exception:
             # Best-effort; ignore plotting errors to keep batch running
+            summary_plot_export_errors.append(str(traceback.format_exc()))
+        try:
+            if summary_plot_export_errors:
+                (base_ts_dir / "summary_plot_export_errors.txt").write_text("\n".join(summary_plot_export_errors), encoding="utf-8")
+        except Exception:
             pass
         # Assemble a single PDF per-aircraft in the model folder from summary_plots PNGs
         try:
@@ -1190,6 +1262,11 @@ def run_payload_range_batch(
         except Exception:
             pass
 
+    try:
+        df.attrs["output_dir"] = str(base_ts_dir)
+        df.attrs["summary_plot_export_error_count"] = int(len(summary_plot_export_errors))
+    except Exception:
+        pass
     return df
 
 
