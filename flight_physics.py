@@ -6,7 +6,7 @@ V-speeds, and other physics-related parameters for flight simulation.
 """
 
 import numpy as np
-from math import sqrt, exp, sin
+from math import sqrt, exp, sin, isfinite
 
 
 def haversine_with_bearing(lat1, lon1, lat2, lon2):
@@ -32,22 +32,64 @@ def haversine_with_bearing(lat1, lon1, lat2, lon2):
 
 
 def atmos(alt, isa_diff):
+    try:
+        alt = float(alt)
+    except Exception:
+        alt = 0.0
+    try:
+        isa_diff = float(isa_diff)
+    except Exception:
+        isa_diff = 0.0
+    if not isfinite(alt):
+        alt = 0.0
+    if not isfinite(isa_diff):
+        isa_diff = 0.0
     if alt > 36089:
         d_alt = alt + isa_diff * 96.157
     else:
         d_alt = alt + isa_diff * 118.89
+    try:
+        d_alt = float(d_alt)
+    except Exception:
+        d_alt = alt
+    if not isfinite(d_alt):
+        d_alt = alt
+    if d_alt < -5000.0:
+        d_alt = -5000.0
+    elif d_alt > 200000.0:
+        d_alt = 200000.0
     if d_alt < 36089:
         theta = 1 - (0.000006875) * d_alt
     else:
         theta = 0.7519
+    try:
+        theta = float(theta)
+    except Exception:
+        theta = 0.7519
+    if not isfinite(theta):
+        theta = 0.7519
+    if theta < 0.01:
+        theta = 0.01
+    elif theta > 2.0:
+        theta = 2.0
     if d_alt < 36089:
         sigma = theta ** 4.2621
     else:
-        sigma = 0.297 * exp(-(0.00004811) * (d_alt - 36089))
+        _arg = -(0.00004811) * (d_alt - 36089)
+        if (not isfinite(_arg)) or _arg > 700.0:
+            _arg = 700.0
+        elif _arg < -700.0:
+            _arg = -700.0
+        sigma = 0.297 * exp(_arg)
     if alt < 36089:
         delta = theta ** 5.2621
     else:
-        delta = 0.223 * exp(-(0.00004811) * (d_alt - 36089))
+        _arg = -(0.00004811) * (d_alt - 36089)
+        if (not isfinite(_arg)) or _arg > 700.0:
+            _arg = 700.0
+        elif _arg < -700.0:
+            _arg = -700.0
+        delta = 0.223 * exp(_arg)
     k_temp = 288.15 * theta
     c = (1.4 * 287 * k_temp) ** 0.5 * 1.94384
     return d_alt, theta, sigma, delta, k_temp, c
@@ -71,14 +113,58 @@ def thrust_calc(d_alt, m, thrust_mult, engines, thrust_factor, segment):
 
 
 def drag_calc(w, cdo, dcdo_flap1, dcdo_flap2, dcdo_flap3, dcdo_gear, m, k, cl, q, s, segment, flap):
-    if m > 0.5:
-        cdnp = (6.667 * m ** 4 - 15.733 * m ** 3 + 13.923 * m ** 2 - 5.464 * m + 0.8012) * (exp(6 * cl ** 2) / 4)
+    try:
+        _m = float(m)
+        _cl = float(cl)
+    except Exception:
+        _m = 0.0
+        _cl = 0.0
+
+    try:
+        _k = float(k)
+    except Exception:
+        _k = 0.0
+
+    if not isfinite(_cl):
+        _cl = 0.0
+    if not isfinite(_m):
+        _m = 0.0
+    if not isfinite(_k):
+        _k = 0.0
+
+    # Clamp to a sane range to prevent numeric blowups in the polynomial terms
+    if _m < 0.0:
+        _m = 0.0
+    elif _m > 5.0:
+        _m = 5.0
+    if _k < 0.0:
+        _k = 0.0
+    elif _k > 10.0:
+        _k = 10.0
+
+    # Use multiplication instead of ** to avoid OverflowError from pow() on extreme floats
+    _cl2 = _cl * _cl
+    if not isfinite(_cl2):
+        _cl2 = 0.0
+
+    if _m > 0.5:
+        _exp_arg = 6.0 * _cl2
+        if (not isfinite(_exp_arg)) or _exp_arg > 700.0:
+            _exp_arg = 700.0
+
+        _m2 = _m * _m
+        _m3 = _m2 * _m
+        _m4 = _m2 * _m2
+        _poly = (6.667 * _m4 - 15.733 * _m3 + 13.923 * _m2 - 5.464 * _m + 0.8012)
+        cdnp = _poly * (exp(_exp_arg) / 4)
     else:
         cdnp = 0
+
     if segment in [0, 13]:
         cdi = 0
     else:
-        cdi = k * cl ** 2
+        cdi = _k * _cl2
+
     if segment == 0:
         cd = cdo + cdi
     elif segment == 2:

@@ -2,6 +2,8 @@
 import runpy
 import io
 import zipfile
+from contextlib import nullcontext
+from datetime import datetime
 import streamlit as st
 import pandas as pd
 from aircraft_config import AIRCRAFT_CONFIG
@@ -443,8 +445,23 @@ with st.sidebar:
 
     # Winds and temps source
     winds_temps_source = st.radio("Winds and Temps Aloft Source", 
-                                ["No Wind", "Current Conditions", "Summer Average", "Winter Average"], 
+                                ["No Wind", "Current Conditions", "Summer Average", "Winter Average", "Monthly Climatology"], 
                                 index=0)  # Default to "No Wind"
+
+    climo_month = None
+    temp_model = "ISA + ISA Deviation"
+    if winds_temps_source == "Monthly Climatology":
+        climo_month = int(st.selectbox(
+            "Climatology Month",
+            list(range(1, 13)),
+            index=0,
+            format_func=lambda m: datetime(2000, int(m), 1).strftime('%B')
+        ))
+        temp_model = st.radio(
+            "Temperature Model",
+            ["ISA + ISA Deviation", "Climatology Temps"],
+            index=0
+        )
 
     # ISA deviation
     isa_dev = int(st.number_input("ISA Deviation (C)", value=0.0, step=1.0))
@@ -493,6 +510,67 @@ with st.sidebar:
                 st.session_state[_k] = ("Both" if _k == 'autobias_target' else 0)
         except Exception:
             pass
+
+    try:
+        if 'bias_sliders_initialized' not in st.session_state:
+            for _k in (
+                'tam_sfc_low', 'tam_sfc_mid', 'tam_sfc_high',
+                'tam_thrust_low', 'tam_thrust_mid', 'tam_thrust_high',
+                'flat_sfc_low', 'flat_sfc_mid', 'flat_sfc_high',
+                'flat_thrust_low', 'flat_thrust_mid', 'flat_thrust_high',
+                'tam_drag_cdo_delta_pct', 'tam_drag_k_delta_pct',
+                'flat_drag_cdo_delta_pct', 'flat_drag_k_delta_pct',
+            ):
+                st.session_state[_k] = 0
+            for _k in (
+                'tam_drag_cdo_delta_pct_applied', 'tam_drag_k_delta_pct_applied',
+                'flat_drag_cdo_delta_pct_applied', 'flat_drag_k_delta_pct_applied',
+            ):
+                st.session_state[_k] = 0
+            st.session_state['applied_biases'] = {}
+            st.session_state['auto_bias_report_tamarack'] = ""
+            st.session_state['auto_bias_report_flatwing'] = ""
+            st.session_state['bias_sliders_initialized'] = True
+    except Exception:
+        pass
+
+    try:
+        if 'autobias_inputs_initialized' not in st.session_state:
+            st.session_state['real_t_climb_min_t'] = 30.0
+            st.session_state['real_fuel_toc_lb_t'] = 550.0
+            st.session_state['real_cruise_pph_t'] = 600.0
+            st.session_state['init_cruise_alt_ft_t'] = min(int(ceiling), 41000)
+
+            st.session_state['real_t_climb_min_f'] = 30.0
+            st.session_state['real_fuel_toc_lb_f'] = 700.0
+            st.session_state['real_cruise_pph_f'] = 700.0
+            st.session_state['init_cruise_alt_ft_f'] = min(int(ceiling), 37000)
+
+            st.session_state['autobias_inputs_initialized'] = True
+    except Exception:
+        pass
+
+    try:
+        if st.sidebar.button("Reset Bias Sliders", key="reset_bias_sliders"):
+            for _k in (
+                'tam_sfc_low', 'tam_sfc_mid', 'tam_sfc_high',
+                'tam_thrust_low', 'tam_thrust_mid', 'tam_thrust_high',
+                'flat_sfc_low', 'flat_sfc_mid', 'flat_sfc_high',
+                'flat_thrust_low', 'flat_thrust_mid', 'flat_thrust_high',
+                'tam_drag_cdo_delta_pct', 'tam_drag_k_delta_pct',
+                'flat_drag_cdo_delta_pct', 'flat_drag_k_delta_pct',
+                'tam_drag_cdo_delta_pct_applied', 'tam_drag_k_delta_pct_applied',
+                'flat_drag_cdo_delta_pct_applied', 'flat_drag_k_delta_pct_applied',
+            ):
+                try:
+                    st.session_state[_k] = 0
+                except Exception:
+                    pass
+            st.session_state['applied_biases'] = {}
+            st.session_state['auto_bias_report_tamarack'] = ""
+            st.session_state['auto_bias_report_flatwing'] = ""
+    except Exception:
+        pass
 
     try:
         _prev_bias_mode = st.session_state.get('_prev_bias_mode')
@@ -592,9 +670,9 @@ with st.sidebar:
         with col_auto_fw:
             st.markdown("**Flatwing Auto Inputs**")
             real_t_climb_min_f = st.number_input("Time to Climb (min)", min_value=0.0, value=30.0, step=0.5, key="real_t_climb_min_f")
-            real_fuel_toc_lb_f = st.number_input("Fuel to TOC (lb)", min_value=0.0, value=600.0, step=10.0, key="real_fuel_toc_lb_f")
+            real_fuel_toc_lb_f = st.number_input("Fuel to TOC (lb)", min_value=0.0, value=700.0, step=10.0, key="real_fuel_toc_lb_f")
             real_cruise_pph_f = st.number_input("Cruise Fuel Burn (lb/hr)", min_value=0.0, value=700.0, step=10.0, key="real_cruise_pph_f")
-            init_cruise_alt_ft_f = st.number_input("Initial Cruise Altitude (ft)", min_value=0, max_value=int(ceiling), value=min(int(ceiling), 35000), step=1000, key="init_cruise_alt_ft_f")
+            init_cruise_alt_ft_f = st.number_input("Initial Cruise Altitude (ft)", min_value=0, max_value=int(ceiling), value=min(int(ceiling), 37000), step=1000, key="init_cruise_alt_ft_f")
         with col_auto_tam:
             st.markdown("**Tamarack Auto Inputs**")
             real_t_climb_min_t = st.number_input("Time to Climb (min)", min_value=0.0, value=30.0, step=0.5, key="real_t_climb_min_t")
@@ -833,6 +911,48 @@ with st.sidebar:
     except Exception:
         pass
 
+    def _climo_fetch_spinner(prefix: str = ""):
+        try:
+            if winds_temps_source != "Monthly Climatology":
+                return nullcontext()
+        except Exception:
+            return nullcontext()
+
+        _m = ""
+        try:
+            if climo_month is not None:
+                _m = datetime(2000, int(climo_month), 1).strftime('%B')
+        except Exception:
+            _m = ""
+        _temp = ""
+        try:
+            if temp_model:
+                _temp = f" ({str(temp_model).strip()})"
+        except Exception:
+            _temp = ""
+
+        msg = "Fetching Monthly Climatology from Open-Meteo"
+        if _m:
+            msg = f"{msg} ({_m}){_temp}"
+        elif _temp:
+            msg = f"{msg}{_temp}"
+        if prefix:
+            msg = f"{prefix}: {msg}"
+        try:
+            # Force this to render in the main panel (not sidebar), even if called
+            # while Streamlit is currently writing into a sidebar context.
+            from contextlib import contextmanager
+
+            @contextmanager
+            def _cm():
+                with main:
+                    with st.spinner(msg):
+                        yield
+
+            return _cm()
+        except Exception:
+            return nullcontext()
+
     if bias_mode == "Auto" and ("Tamarack" in mods_available or "Flatwing" in mods_available):
         _auto_status = main.empty()
         try:
@@ -868,7 +988,7 @@ with st.sidebar:
             try:
                 _keys = ('sfc_low', 'sfc_mid', 'sfc_high', 'thrust_low', 'thrust_mid', 'thrust_high')
                 try:
-                    if str(st.session_state.get('autobias_target', 'Both')) in ('Aerodynamics', 'Both'):
+                    if str(st.session_state.get('autobias_target', 'Both') or 'Both').strip() in ('Aerodynamics', 'Both'):
                         _keys = _keys + ('drag_cdo_delta_pct', 'drag_k_delta_pct')
                 except Exception:
                     pass
@@ -917,7 +1037,7 @@ with st.sidebar:
 
         _target = "Both"
         try:
-            _target = str(st.session_state.get('autobias_target', 'Both') or 'Both')
+            _target = str(st.session_state.get('autobias_target', 'Both') or 'Both').strip()
         except Exception:
             _target = "Both"
         _adjust_engines = _target in ("Engines", "Both")
@@ -939,15 +1059,28 @@ with st.sidebar:
                 except Exception:
                     _cal_payload_t, _cal_fuel_t = payload_t, fuel_t
 
-                sfc_low = _clamp_bias(tam_sfc_low)
-                sfc_mid = _clamp_bias(tam_sfc_mid)
-                sfc_high = _clamp_bias(tam_sfc_high)
-                thrust_low = _clamp_bias(tam_thrust_low)
-                thrust_mid = _clamp_bias(tam_thrust_mid)
-                thrust_high = _clamp_bias(tam_thrust_high)
+                try:
+                    _applied_all = st.session_state.get('applied_biases', {})
+                    _prev_tam_bias = _applied_all.get('Tamarack') if isinstance(_applied_all, dict) else None
+                    if not isinstance(_prev_tam_bias, dict):
+                        _prev_tam_bias = {}
+                except Exception:
+                    _prev_tam_bias = {}
 
-                drag_cdo_delta = _clamp_drag(tam_drag_cdo_delta_pct)
-                drag_k_delta = _clamp_drag(tam_drag_k_delta_pct)
+                sfc_low = _clamp_bias(_prev_tam_bias.get('sfc_low', st.session_state.get('tam_sfc_low', tam_sfc_low)))
+                sfc_mid = _clamp_bias(_prev_tam_bias.get('sfc_mid', st.session_state.get('tam_sfc_mid', tam_sfc_mid)))
+                sfc_high = _clamp_bias(_prev_tam_bias.get('sfc_high', st.session_state.get('tam_sfc_high', tam_sfc_high)))
+                thrust_low = _clamp_bias(_prev_tam_bias.get('thrust_low', st.session_state.get('tam_thrust_low', tam_thrust_low)))
+                thrust_mid = _clamp_bias(_prev_tam_bias.get('thrust_mid', st.session_state.get('tam_thrust_mid', tam_thrust_mid)))
+                thrust_high = _clamp_bias(_prev_tam_bias.get('thrust_high', st.session_state.get('tam_thrust_high', tam_thrust_high)))
+
+                sfc_low_0, sfc_mid_0, sfc_high_0 = sfc_low, sfc_mid, sfc_high
+                thrust_low_0, thrust_mid_0, thrust_high_0 = thrust_low, thrust_mid, thrust_high
+
+                drag_cdo_delta = _clamp_drag(_prev_tam_bias.get('drag_cdo_delta_pct', st.session_state.get('tam_drag_cdo_delta_pct', tam_drag_cdo_delta_pct)))
+                drag_k_delta = _clamp_drag(_prev_tam_bias.get('drag_k_delta_pct', st.session_state.get('tam_drag_k_delta_pct', tam_drag_k_delta_pct)))
+
+                drag_cdo_delta_0, drag_k_delta_0 = drag_cdo_delta, drag_k_delta
 
                 _last_tgt_climb = 0.0
                 _last_sim_climb = 0.0
@@ -956,17 +1089,19 @@ with st.sidebar:
                 _last_tgt_toc = 0.0
                 _last_sim_toc = 0.0
 
-                for _ in range(3):
-                    _, sim_res, *_ = run_simulation(
-                        dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-                        _cal_payload_t, _cal_fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-                        winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
-                        sfc_bias_low=sfc_low, sfc_bias_mid=sfc_mid, sfc_bias_high=sfc_high,
-                        thrust_bias_low=thrust_low, thrust_bias_mid=thrust_mid, thrust_bias_high=thrust_high,
-                        bias_alt_mid=bias_alt_mid_ft,
-                        drag_cdo_delta_pct=drag_cdo_delta,
-                        drag_k_delta_pct=drag_k_delta
-                    )
+                with _climo_fetch_spinner("AutoBias Tamarack"):
+                    for _ in range(3):
+                        _, sim_res, *_ = run_simulation(
+                            dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
+                            _cal_payload_t, _cal_fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                            winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
+                            climo_month=climo_month, temp_model=temp_model,
+                            sfc_bias_low=sfc_low, sfc_bias_mid=sfc_mid, sfc_bias_high=sfc_high,
+                            thrust_bias_low=thrust_low, thrust_bias_mid=thrust_mid, thrust_bias_high=thrust_high,
+                            bias_alt_mid=bias_alt_mid_ft,
+                            drag_cdo_delta_pct=drag_cdo_delta,
+                            drag_k_delta_pct=drag_k_delta
+                        )
 
                     try:
                         tgt_climb = float(real_t_climb_min_t)
@@ -1038,6 +1173,13 @@ with st.sidebar:
                             d = _clamp_drag(-ratio * 15)
                             drag_cdo_delta = _clamp_drag(drag_cdo_delta + d)
                             drag_k_delta = _clamp_drag(drag_k_delta + _clamp_drag(d * 0.2))
+
+                if not _adjust_drag:
+                    drag_cdo_delta = drag_cdo_delta_0
+                    drag_k_delta = drag_k_delta_0
+                if not _adjust_engines:
+                    sfc_low, sfc_mid, sfc_high = sfc_low_0, sfc_mid_0, sfc_high_0
+                    thrust_low, thrust_mid, thrust_high = thrust_low_0, thrust_mid_0, thrust_high_0
 
                 tam_sfc_low, tam_sfc_mid, tam_sfc_high = sfc_low, sfc_mid, sfc_high
                 tam_thrust_low, tam_thrust_mid, tam_thrust_high = thrust_low, thrust_mid, thrust_high
@@ -1155,15 +1297,28 @@ with st.sidebar:
                 except Exception:
                     _cal_payload_f, _cal_fuel_f = payload_f, fuel_f
 
-                sfc_low = _clamp_bias(flat_sfc_low)
-                sfc_mid = _clamp_bias(flat_sfc_mid)
-                sfc_high = _clamp_bias(flat_sfc_high)
-                thrust_low = _clamp_bias(flat_thrust_low)
-                thrust_mid = _clamp_bias(flat_thrust_mid)
-                thrust_high = _clamp_bias(flat_thrust_high)
+                try:
+                    _applied_all = st.session_state.get('applied_biases', {})
+                    _prev_flat_bias = _applied_all.get('Flatwing') if isinstance(_applied_all, dict) else None
+                    if not isinstance(_prev_flat_bias, dict):
+                        _prev_flat_bias = {}
+                except Exception:
+                    _prev_flat_bias = {}
 
-                drag_cdo_delta = _clamp_drag(flat_drag_cdo_delta_pct)
-                drag_k_delta = _clamp_drag(flat_drag_k_delta_pct)
+                sfc_low = _clamp_bias(_prev_flat_bias.get('sfc_low', st.session_state.get('flat_sfc_low', flat_sfc_low)))
+                sfc_mid = _clamp_bias(_prev_flat_bias.get('sfc_mid', st.session_state.get('flat_sfc_mid', flat_sfc_mid)))
+                sfc_high = _clamp_bias(_prev_flat_bias.get('sfc_high', st.session_state.get('flat_sfc_high', flat_sfc_high)))
+                thrust_low = _clamp_bias(_prev_flat_bias.get('thrust_low', st.session_state.get('flat_thrust_low', flat_thrust_low)))
+                thrust_mid = _clamp_bias(_prev_flat_bias.get('thrust_mid', st.session_state.get('flat_thrust_mid', flat_thrust_mid)))
+                thrust_high = _clamp_bias(_prev_flat_bias.get('thrust_high', st.session_state.get('flat_thrust_high', flat_thrust_high)))
+
+                sfc_low_0, sfc_mid_0, sfc_high_0 = sfc_low, sfc_mid, sfc_high
+                thrust_low_0, thrust_mid_0, thrust_high_0 = thrust_low, thrust_mid, thrust_high
+
+                drag_cdo_delta = _clamp_drag(_prev_flat_bias.get('drag_cdo_delta_pct', st.session_state.get('flat_drag_cdo_delta_pct', flat_drag_cdo_delta_pct)))
+                drag_k_delta = _clamp_drag(_prev_flat_bias.get('drag_k_delta_pct', st.session_state.get('flat_drag_k_delta_pct', flat_drag_k_delta_pct)))
+
+                drag_cdo_delta_0, drag_k_delta_0 = drag_cdo_delta, drag_k_delta
 
                 _last_tgt_climb_f = 0.0
                 _last_sim_climb_f = 0.0
@@ -1172,17 +1327,19 @@ with st.sidebar:
                 _last_tgt_toc_f = 0.0
                 _last_sim_toc_f = 0.0
 
-                for _ in range(3):
-                    _, sim_res, *_ = run_simulation(
-                        dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                        _cal_payload_f, _cal_fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-                        winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
-                        sfc_bias_low=sfc_low, sfc_bias_mid=sfc_mid, sfc_bias_high=sfc_high,
-                        thrust_bias_low=thrust_low, thrust_bias_mid=thrust_mid, thrust_bias_high=thrust_high,
-                        bias_alt_mid=bias_alt_mid_ft,
-                        drag_cdo_delta_pct=drag_cdo_delta,
-                        drag_k_delta_pct=drag_k_delta
-                    )
+                with _climo_fetch_spinner("AutoBias Flatwing"):
+                    for _ in range(3):
+                        _, sim_res, *_ = run_simulation(
+                            dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
+                            _cal_payload_f, _cal_fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                            winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
+                            climo_month=climo_month, temp_model=temp_model,
+                            sfc_bias_low=sfc_low, sfc_bias_mid=sfc_mid, sfc_bias_high=sfc_high,
+                            thrust_bias_low=thrust_low, thrust_bias_mid=thrust_mid, thrust_bias_high=thrust_high,
+                            bias_alt_mid=bias_alt_mid_ft,
+                            drag_cdo_delta_pct=drag_cdo_delta,
+                            drag_k_delta_pct=drag_k_delta
+                        )
 
                     try:
                         tgt_climb = float(real_t_climb_min_f)
@@ -1254,6 +1411,13 @@ with st.sidebar:
                             d = _clamp_drag(-ratio * 15)
                             drag_cdo_delta = _clamp_drag(drag_cdo_delta + d)
                             drag_k_delta = _clamp_drag(drag_k_delta + _clamp_drag(d * 0.2))
+
+                if not _adjust_drag:
+                    drag_cdo_delta = drag_cdo_delta_0
+                    drag_k_delta = drag_k_delta_0
+                if not _adjust_engines:
+                    sfc_low, sfc_mid, sfc_high = sfc_low_0, sfc_mid_0, sfc_high_0
+                    thrust_low, thrust_mid, thrust_high = thrust_low_0, thrust_mid_0, thrust_high_0
 
                 flat_sfc_low, flat_sfc_mid, flat_sfc_high = sfc_low, sfc_mid, sfc_high
                 flat_thrust_low, flat_thrust_mid, flat_thrust_high = thrust_low, thrust_mid, thrust_high
@@ -1393,15 +1557,17 @@ with st.sidebar:
                             _mode_status.write(f"Running {mode} - Tamarack ({_mode_step + 1}/{_mode_total_steps})")
                     except Exception:
                         pass
-                    t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
-                        dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-                        payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-                        winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
-                        sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
-                        thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
-                        bias_alt_mid=bias_alt_mid_ft,
-                        drag_cdo_delta_pct=tam_drag_cdo_to_use,
-                        drag_k_delta_pct=tam_drag_k_to_use)
+                    with _climo_fetch_spinner(f"{mode} - Tamarack"):
+                        t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
+                            dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
+                            payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                            winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
+                            climo_month=climo_month, temp_model=temp_model,
+                            sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
+                            thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
+                            bias_alt_mid=bias_alt_mid_ft,
+                            drag_cdo_delta_pct=tam_drag_cdo_to_use,
+                            drag_k_delta_pct=tam_drag_k_to_use)
                     res["Tamarack"] = (t_data, t_results, t_out)
                     if first_coords is None:
                         first_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
@@ -1419,15 +1585,17 @@ with st.sidebar:
                             _mode_status.write(f"Running {mode} - Flatwing ({_mode_step + 1}/{_mode_total_steps})")
                     except Exception:
                         pass
-                    f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
-                        dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                        payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-                        winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
-                        sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
-                        thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
-                        bias_alt_mid=bias_alt_mid_ft,
-                        drag_cdo_delta_pct=flat_drag_cdo_to_use,
-                        drag_k_delta_pct=flat_drag_k_to_use)
+                    with _climo_fetch_spinner(f"{mode} - Flatwing"):
+                        f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
+                            dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
+                            payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                            winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
+                            climo_month=climo_month, temp_model=temp_model,
+                            sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
+                            thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
+                            bias_alt_mid=bias_alt_mid_ft,
+                            drag_cdo_delta_pct=flat_drag_cdo_to_use,
+                            drag_k_delta_pct=flat_drag_k_to_use)
                     res["Flatwing"] = (f_data, f_results, f_out)
                     if first_coords is None:
                         first_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
@@ -1445,15 +1613,17 @@ with st.sidebar:
                         _mode_status.write(f"Running {mode} ({_mode_step + 1}/{_mode_total_steps})")
                 except Exception:
                     pass
-                t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
-                    dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-                    payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-                    winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
-                    sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
-                    thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
-                    bias_alt_mid=bias_alt_mid_ft,
-                    drag_cdo_delta_pct=tam_drag_cdo_to_use,
-                    drag_k_delta_pct=tam_drag_k_to_use)
+                with _climo_fetch_spinner(f"{mode}"):
+                    t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
+                        dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
+                        payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                        winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
+                        climo_month=climo_month, temp_model=temp_model,
+                        sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
+                        thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
+                        bias_alt_mid=bias_alt_mid_ft,
+                        drag_cdo_delta_pct=tam_drag_cdo_to_use,
+                        drag_k_delta_pct=tam_drag_k_to_use)
                 res["Tamarack"] = (t_data, t_results, t_out)
                 if first_coords is None:
                     first_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
@@ -1471,15 +1641,17 @@ with st.sidebar:
                         _mode_status.write(f"Running {mode} ({_mode_step + 1}/{_mode_total_steps})")
                 except Exception:
                     pass
-                f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
-                    dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                    payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-                    winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
-                    sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
-                    thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
-                    bias_alt_mid=bias_alt_mid_ft,
-                    drag_cdo_delta_pct=flat_drag_cdo_to_use,
-                    drag_k_delta_pct=flat_drag_k_to_use)
+                with _climo_fetch_spinner(f"{mode}"):
+                    f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
+                        dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
+                        payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                        winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
+                        climo_month=climo_month, temp_model=temp_model,
+                        sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
+                        thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
+                        bias_alt_mid=bias_alt_mid_ft,
+                        drag_cdo_delta_pct=flat_drag_cdo_to_use,
+                        drag_k_delta_pct=flat_drag_k_to_use)
                 res["Flatwing"] = (f_data, f_results, f_out)
                 if first_coords is None:
                     first_coords = (dep_lat, dep_lon, arr_lat, arr_lon)
@@ -1563,45 +1735,53 @@ with st.sidebar:
         flatwing_data, flatwing_results = pd.DataFrame(), {}
         if wing_type == "Comparison":
             if "Tamarack" in mods_available:
+                with _climo_fetch_spinner("Run - Tamarack"):
+                    tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
+                        dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
+                        payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                        winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
+                        climo_month=climo_month, temp_model=temp_model,
+                        sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
+                        thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
+                        bias_alt_mid=bias_alt_mid_ft,
+                        drag_cdo_delta_pct=tam_drag_cdo_to_use,
+                        drag_k_delta_pct=tam_drag_k_to_use)
+            if "Flatwing" in mods_available:
+                with _climo_fetch_spinner("Run - Flatwing"):
+                    flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
+                        dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
+                        payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                        winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
+                        climo_month=climo_month, temp_model=temp_model,
+                        sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
+                        thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
+                        bias_alt_mid=bias_alt_mid_ft,
+                        drag_cdo_delta_pct=flat_drag_cdo_to_use,
+                        drag_k_delta_pct=flat_drag_k_to_use)
+        elif wing_type == "Tamarack":
+            with _climo_fetch_spinner("Run"):
                 tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
                     dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
                     payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
                     winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
+                    climo_month=climo_month, temp_model=temp_model,
                     sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
                     thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
                     bias_alt_mid=bias_alt_mid_ft,
                     drag_cdo_delta_pct=tam_drag_cdo_to_use,
                     drag_k_delta_pct=tam_drag_k_to_use)
-            if "Flatwing" in mods_available:
+        elif wing_type == "Flatwing":
+            with _climo_fetch_spinner("Run"):
                 flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
                     dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
                     payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
                     winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
+                    climo_month=climo_month, temp_model=temp_model,
                     sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
                     thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
                     bias_alt_mid=bias_alt_mid_ft,
                     drag_cdo_delta_pct=flat_drag_cdo_to_use,
-                    drag_k_delta_pct=flat_drag_k_to_use)
-        elif wing_type == "Tamarack":
-            tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
-                dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-                payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
-                winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
-                sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
-                thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
-                bias_alt_mid=bias_alt_mid_ft,
-                drag_cdo_delta_pct=tam_drag_cdo_to_use,
-                drag_k_delta_pct=tam_drag_k_to_use)
-        elif wing_type == "Flatwing":
-            flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
-                dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
-                winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
-                sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
-                thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
-                bias_alt_mid=bias_alt_mid_ft,
-                drag_cdo_delta_pct=flat_drag_cdo_to_use,
-                drag_k_delta_pct=flat_drag_k_to_use)# Display results
+                    drag_k_delta_pct=flat_drag_k_to_use)# Display results
     try:
         distance_nm, bearing_deg = haversine_with_bearing(dep_lat, dep_lon, arr_lat, arr_lon)
     except Exception:

@@ -1,4 +1,21 @@
-import streamlit as st
+try:
+    import streamlit as st
+except ModuleNotFoundError:
+    class _NoStreamlit:
+        def cache_data(self, func=None, **_kwargs):
+            if func is None:
+                def _decorator(f):
+                    return f
+                return _decorator
+            return func
+
+        def error(self, msg):
+            raise RuntimeError(msg)
+
+        def stop(self):
+            raise RuntimeError("Streamlit stop")
+
+    st = _NoStreamlit()
 import pandas as pd
 
 

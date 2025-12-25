@@ -1,6 +1,11 @@
 ﻿from math import radians, sin, cos, sqrt, degrees, pi, tan
 import os
 from datetime import datetime
+import json
+import calendar
+from functools import lru_cache
+from urllib.request import urlopen
+from urllib.parse import urlencode
 
 try:
     import streamlit as st
@@ -19,6 +24,119 @@ except ImportError:
     TURBOPROP_PARAMS = {}
 from flight_physics import atmos, vspeeds, physics, predict_roc, next_step_altitude
 from utils import load_airports
+
+
+def _safe_float(x):
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+
+def _clamp_f(v: float, lo: float, hi: float) -> float:
+    try:
+        return float(max(float(lo), min(float(hi), float(v))))
+    except Exception:
+        return float(lo)
+
+
+@lru_cache(maxsize=4096)
+def _open_meteo_monthly_means_point(lat_r: float, lon_r: float, month: int, include_temp: bool) -> tuple:
+    years = (2022, 2023, 2024)
+    month_i = int(month)
+    if month_i < 1:
+        month_i = 1
+    if month_i > 12:
+        month_i = 12
+
+    levels = (500, 300, 200)
+    base_vars = []
+    for lv in levels:
+        base_vars.append(f"windspeed_{lv}hPa")
+        base_vars.append(f"winddirection_{lv}hPa")
+        if include_temp:
+            base_vars.append(f"temperature_{lv}hPa")
+
+    u_sum = {lv: 0.0 for lv in levels}
+    v_sum = {lv: 0.0 for lv in levels}
+    uv_n = {lv: 0 for lv in levels}
+    t_sum = {lv: 0.0 for lv in levels}
+    t_n = {lv: 0 for lv in levels}
+
+    for y in years:
+        try:
+            last_day = int(calendar.monthrange(int(y), int(month_i))[1])
+        except Exception:
+            last_day = 28
+        start_date = f"{int(y):04d}-{int(month_i):02d}-01"
+        end_date = f"{int(y):04d}-{int(month_i):02d}-{int(last_day):02d}"
+
+        params = {
+            "latitude": float(lat_r),
+            "longitude": float(lon_r),
+            "start_date": start_date,
+            "end_date": end_date,
+            "hourly": ",".join(base_vars),
+            "timezone": "UTC",
+            "windspeed_unit": "kn",
+        }
+        url = "https://historical-forecast-api.open-meteo.com/v1/forecast?" + urlencode(params)
+        try:
+            with urlopen(url, timeout=30) as resp:
+                raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
+            hourly = data.get("hourly") or {}
+        except Exception:
+            continue
+
+        for lv in levels:
+            spd_arr = hourly.get(f"windspeed_{lv}hPa")
+            dir_arr = hourly.get(f"winddirection_{lv}hPa")
+            if not spd_arr or not dir_arr:
+                continue
+            for s, d in zip(spd_arr, dir_arr):
+                ss = _safe_float(s)
+                dd = _safe_float(d)
+                if ss is None or dd is None:
+                    continue
+                ddr = np.deg2rad(dd)
+                u = -ss * np.sin(ddr)
+                v = -ss * np.cos(ddr)
+                if np.isfinite(u) and np.isfinite(v):
+                    u_sum[lv] += float(u)
+                    v_sum[lv] += float(v)
+                    uv_n[lv] += 1
+
+            if include_temp:
+                t_arr = hourly.get(f"temperature_{lv}hPa")
+                if t_arr:
+                    for tt in t_arr:
+                        tv = _safe_float(tt)
+                        if tv is None:
+                            continue
+                        if np.isfinite(tv):
+                            t_sum[lv] += float(tv)
+                            t_n[lv] += 1
+
+    out = []
+    for lv in levels:
+        if uv_n[lv] <= 0:
+            out.append((lv, None, None, None))
+            continue
+        u_m = u_sum[lv] / float(uv_n[lv])
+        v_m = v_sum[lv] / float(uv_n[lv])
+        spd_m = float(np.sqrt(u_m * u_m + v_m * v_m))
+        if spd_m <= 1e-9:
+            dir_m = 0.0
+        else:
+            dir_m = float((np.rad2deg(np.arctan2(-u_m, -v_m)) + 360.0) % 360.0)
+        t_m = None
+        if include_temp and t_n[lv] > 0:
+            t_m = t_sum[lv] / float(t_n[lv])
+        out.append((lv, dir_m, spd_m, t_m))
+    return tuple(out)
 
 def compute_segment_fuel_remaining(total_initial_fuel, fuel_burn_sequence):
     """
@@ -369,6 +487,8 @@ def run_simulation(
     cruise_mach: float | None = None,
     cruise_kias: float | None = None,
     isa_dev_c: float | None = None,
+    climo_month: int | None = None,
+    temp_model: str | None = None,
     range_mode: bool = False,
     cruise_mode: str | None = None,
     sfc_bias_low: float | int = 0.0,
@@ -589,7 +709,45 @@ def run_simulation(
         "Summer Average": _conus_climo_table("Summer", route_mid_lat),
         "Winter Average": _conus_climo_table("Winter", route_mid_lat),
     }
-    selected_winds_temps = winds_temps_data[winds_temps_source]
+    winds_temps_by_point = None
+    selected_winds_temps = winds_temps_data.get(winds_temps_source)
+
+    climo_month_i = None
+    try:
+        if climo_month is not None:
+            climo_month_i = int(climo_month)
+    except Exception:
+        climo_month_i = None
+
+    try:
+        if winds_temps_source == "Monthly Climatology" and climo_month_i is not None:
+            include_temp = (str(temp_model).strip().lower() == "climatology temps")
+            winds_temps_by_point = []
+            for (plat, plon) in route_points:
+                try:
+                    lat_r = round(float(plat), 2)
+                    lon_r = round(float(plon), 2)
+                except Exception:
+                    lat_r = round(float(route_mid_lat), 2)
+                    lon_r = round(float(dep_longitude), 2)
+                raw = _open_meteo_monthly_means_point(lat_r, lon_r, int(climo_month_i), bool(include_temp))
+                table = {}
+                for lv, d, s, t in raw:
+                    alt_key = 18000 if int(lv) == 500 else (30000 if int(lv) == 300 else 39000)
+                    if d is None or s is None:
+                        continue
+                    table[alt_key] = (float(d), float(s), (float(t) if t is not None else 0.0))
+                if not table:
+                    if int(climo_month_i) in (12, 1, 2, 3, 11):
+                        table = _conus_climo_table("Winter", route_mid_lat)
+                    else:
+                        table = _conus_climo_table("Summer", route_mid_lat)
+                winds_temps_by_point.append(table)
+    except Exception:
+        winds_temps_by_point = None
+
+    if selected_winds_temps is None:
+        selected_winds_temps = winds_temps_data.get("No Wind")
     # ISA deviation override (applied as an additive temperature delta each step)
     isa_dev_c_opt = 0.0
     try:
@@ -857,7 +1015,11 @@ def run_simulation(
         return float(kias) / np.sqrt(max(1e-6, float(sigma_val)))
 
     def _gs_knots(vktas_knots: float, wind_comp_knots: float) -> float:
-        return max(30.0, float(vktas_knots) + float(wind_comp_knots))
+        try:
+            gs = float(vktas_knots) + float(wind_comp_knots)
+        except Exception:
+            gs = float(vktas_knots) if vktas_knots is not None else 0.0
+        return _clamp_f(gs, 30.0, 700.0)
 
     def _segment_dist_nm_for_descent(delta_alt_ft: float, rod_fpm: float, gs_knots: float) -> float:
         da = float(delta_alt_ft)
@@ -1108,19 +1270,41 @@ def run_simulation(
             segment = 14  # Force termination
             break
 
-        # Interpolate winds and temperatures at the current altitude
-        wind_dir, wind_speed, temp = interpolate_winds_temps(alt, selected_winds_temps)
-        if isa_dev_c_opt:
-            temp = temp + isa_dev_c_opt
+        try:
+            if winds_temps_by_point is not None and closest_point_idx < len(winds_temps_by_point):
+                _wt = winds_temps_by_point[closest_point_idx]
+            else:
+                _wt = selected_winds_temps
+        except Exception:
+            _wt = selected_winds_temps
 
-        # Compute ISA temperature at current altitude for density altitude adjustment
-        isa_temp = 15 - 0.0019812 * alt  # ISA temperature lapse rate (approx)
-        isa_diff = temp - isa_temp  # Deviation from ISA
+        wind_dir, wind_speed, temp = interpolate_winds_temps(alt, _wt)
+
+        try:
+            wind_speed = float(wind_speed)
+        except Exception:
+            wind_speed = 0.0
+        if not np.isfinite(wind_speed):
+            wind_speed = 0.0
+        wind_speed = _clamp_f(wind_speed, 0.0, 200.0)
+
+        isa_temp = 15 - 0.0019812 * alt
+
+        if str(temp_model).strip().lower() == "climatology temps":
+            try:
+                isa_diff = float(temp) - float(isa_temp)
+            except Exception:
+                isa_diff = 0.0
+        else:
+            isa_diff = float(isa_dev_c_opt or 0.0)
 
         # Compute wind component affecting ground speed
         heading_rad = radians(bearing)
         wind_dir_rad = radians(wind_dir)
         wind_component = -wind_speed * cos(wind_dir_rad - heading_rad)  # Positive for tailwind, negative for headwind
+        if not np.isfinite(wind_component):
+            wind_component = 0.0
+        wind_component = _clamp_f(wind_component, -200.0, 200.0)
 
         d_alt, _, sigma, delta, _, c = atmos(alt, isa_diff)
 
@@ -1185,7 +1369,17 @@ def run_simulation(
             tx = 0
             gamma = 0
         elif segment in (8, 9, 10, 11, 12):
-            gamma = roc_goal / 60 / v_true_fps * (6076.12 / 3600)
+            # Avoid divide-by-(near)-zero spikes in gamma/ROC when speed temporarily collapses
+            # around segment transitions.
+            try:
+                _v = float(v_true_fps)
+            except Exception:
+                _v = 0.0
+            if (not np.isfinite(_v)) or abs(_v) < 1e-3:
+                gamma = 0.0
+            else:
+                gamma = (roc_goal / 60.0) / _v * (6076.12 / 3600.0)
+                gamma = _clamp_f(gamma, -0.5, 0.5)
             if round(vkias) >= round(speed_goal) and thrust > drag:
                 if w * sin(gamma) + drag < 100:
                     thrust = 100
@@ -1201,6 +1395,10 @@ def run_simulation(
 
         roc_fps = gamma * v_true_fps / (6076.12 / 3600)
         roc_fpm = roc_fps * 60
+        try:
+            roc_fpm = _clamp_f(roc_fpm, -6000.0, 6000.0)
+        except Exception:
+            pass
         gradient = tan(gamma) * 100 if gamma != 0 else 0  # Calculate gradient at each step
 
         if segment in (3, 4, 5) and alt > alt_goal:
@@ -1310,7 +1508,9 @@ def run_simulation(
             final_results['Cruise - First Level-Off Alt (ft)'] = round(first_level_off_alt)
 
         v_true_fps_wind = wind_component * 6076.12 / 3600  # Convert knots to ft/s
-        dist_ft += (v_true_fps + v_true_fps_wind) * t_inc
+        v_gnd_fps = float(v_true_fps) + float(v_true_fps_wind)
+        v_gnd_fps = _clamp_f(v_gnd_fps, 30.0 * 6076.12 / 3600.0, 700.0 * 6076.12 / 3600.0)
+        dist_ft += v_gnd_fps * t_inc
         remaining_dist = total_dist - dist_ft / 6076.12
         alt += roc_fps * t_inc
         t += t_inc
