@@ -884,6 +884,19 @@ with st.sidebar:
             except Exception:
                 return 0.0
 
+        def _pph_from_run(r: dict, df: pd.DataFrame | None) -> float:
+            try:
+                if isinstance(df, pd.DataFrame) and (not df.empty) and ("Fuel Flow (lb/hr)" in df.columns) and ("Segment" in df.columns):
+                    seg = df["Segment"]
+                    mask = seg.isin([6, 7])
+                    vals = pd.to_numeric(df.loc[mask, "Fuel Flow (lb/hr)"], errors="coerce")
+                    vals = vals[vals > 0]
+                    if vals.notna().any():
+                        return float(vals.median())
+            except Exception:
+                pass
+            return _pph_from_results(r)
+
         def _any_nonzero(d: dict) -> bool:
             try:
                 _keys = ('sfc_low', 'sfc_mid', 'sfc_high', 'thrust_low', 'thrust_mid', 'thrust_high')
@@ -977,7 +990,7 @@ with st.sidebar:
                 _last_sim_toc = 0.0
 
                 for _ in range(3):
-                    _, sim_res, *_ = run_simulation(
+                    sim_df, sim_res, *_ = run_simulation(
                         dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
                         _cal_payload_t, _cal_fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
                         winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
@@ -1016,7 +1029,7 @@ with st.sidebar:
                         tgt_pph = float(real_cruise_pph_t)
                     except Exception:
                         tgt_pph = 0.0
-                    sim_pph = _pph_from_results(sim_res)
+                    sim_pph = _pph_from_run(sim_res, sim_df)
 
                     _last_tgt_pph = tgt_pph
                     _last_sim_pph = sim_pph
@@ -1026,9 +1039,8 @@ with st.sidebar:
                         delta = _clamp_bias(ratio * 40)
                         delta = _clamp_bias(-delta)
                         if _adjust_engines and delta != 0:
-                            sfc_low = _clamp_bias(sfc_low + delta)
-                            sfc_mid = _clamp_bias(sfc_mid + delta)
                             sfc_high = _clamp_bias(sfc_high + delta)
+                            sfc_mid = _clamp_bias(sfc_mid + int(round(delta * 0.5)))
                         if _adjust_drag:
                             d = _clamp_drag(-ratio * 20)
                             drag_cdo_delta = _clamp_drag(drag_cdo_delta + d)
@@ -1052,8 +1064,7 @@ with st.sidebar:
                         delta = _clamp_bias(-delta)
                         if _adjust_engines and delta != 0:
                             sfc_low = _clamp_bias(sfc_low + delta)
-                            sfc_mid = _clamp_bias(sfc_mid + delta)
-                            sfc_high = _clamp_bias(sfc_high + delta)
+                            sfc_mid = _clamp_bias(sfc_mid + int(round(delta * 0.5)))
                         if _adjust_drag:
                             d = _clamp_drag(-ratio * 15)
                             drag_cdo_delta = _clamp_drag(drag_cdo_delta + d)
@@ -1193,7 +1204,7 @@ with st.sidebar:
                 _last_sim_toc_f = 0.0
 
                 for _ in range(3):
-                    _, sim_res, *_ = run_simulation(
+                    sim_df, sim_res, *_ = run_simulation(
                         dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
                         _cal_payload_f, _cal_fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
                         winds_temps_source, v1_cut_enabled, False, cruise_mode=cruise_mode,
@@ -1232,7 +1243,7 @@ with st.sidebar:
                         tgt_pph = float(real_cruise_pph_f)
                     except Exception:
                         tgt_pph = 0.0
-                    sim_pph = _pph_from_results(sim_res)
+                    sim_pph = _pph_from_run(sim_res, sim_df)
 
                     _last_tgt_pph_f = tgt_pph
                     _last_sim_pph_f = sim_pph
@@ -1242,9 +1253,8 @@ with st.sidebar:
                         delta = _clamp_bias(ratio * 40)
                         delta = _clamp_bias(-delta)
                         if _adjust_engines and delta != 0:
-                            sfc_low = _clamp_bias(sfc_low + delta)
-                            sfc_mid = _clamp_bias(sfc_mid + delta)
                             sfc_high = _clamp_bias(sfc_high + delta)
+                            sfc_mid = _clamp_bias(sfc_mid + int(round(delta * 0.5)))
                         if _adjust_drag:
                             d = _clamp_drag(-ratio * 20)
                             drag_cdo_delta = _clamp_drag(drag_cdo_delta + d)
@@ -1268,8 +1278,7 @@ with st.sidebar:
                         delta = _clamp_bias(-delta)
                         if _adjust_engines and delta != 0:
                             sfc_low = _clamp_bias(sfc_low + delta)
-                            sfc_mid = _clamp_bias(sfc_mid + delta)
-                            sfc_high = _clamp_bias(sfc_high + delta)
+                            sfc_mid = _clamp_bias(sfc_mid + int(round(delta * 0.5)))
                         if _adjust_drag:
                             d = _clamp_drag(-ratio * 15)
                             drag_cdo_delta = _clamp_drag(drag_cdo_delta + d)

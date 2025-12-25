@@ -591,17 +591,17 @@ def display_simulation_results(
             if has_both:
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.caption("Flatwing")
-                    try:
-                        st.table(_style_exceed(weight_df_flatwing))
-                    except Exception:
-                        st.table(weight_df_flatwing)
-                with col2:
-                    st.caption("Tamarack")
+                    st.markdown("### **Tamarack**")
                     try:
                         st.table(_style_exceed(weight_df_tamarack))
                     except Exception:
                         st.table(weight_df_tamarack)
+                with col2:
+                    st.markdown("### **Flatwing**")
+                    try:
+                        st.table(_style_exceed(weight_df_flatwing))
+                    except Exception:
+                        st.table(weight_df_flatwing)
             elif has_single:
                 try:
                     st.table(_style_exceed(weight_df_single))
