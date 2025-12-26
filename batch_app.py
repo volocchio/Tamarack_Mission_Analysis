@@ -121,9 +121,8 @@ with st.sidebar:
             except Exception:
                 pass
     ceiling_min = min(ceiling_vals) if len(ceiling_vals) > 0 else None
-    alt_start_eff = int(min(float(alt_start), float(ceiling_min))) if ceiling_min is not None else int(alt_start)
     if ceiling_min is not None and float(alt_start) > float(ceiling_min) + 1e-9:
-        st.info(f"Altitude sweep start clamped to {int(ceiling_min):,} ft based on selected aircraft ceiling.")
+        st.info("Altitude sweep start is applied per-aircraft (clamped to each aircraft ceiling).")
 
     # Plot types
     st.header("Plots to show")
@@ -201,7 +200,7 @@ with st.sidebar:
             speed_count_est = _count_range_int(int(kias_start), int(kias_end), int(kias_step))
     else:
         speed_count_est = 1
-    alt_count_est = _count_range_int(int(alt_start_eff), int(alt_end), int(alt_step))
+    alt_count_est = _count_range_int(int(alt_start), int(alt_end), int(alt_step))
     payload_count_est = int(payload_steps)
     est_total_runs = max(1, len(selected_aircraft) * len(selected_mods) * len(selected_isa) * 1 * speed_count_est * alt_count_est * payload_count_est)
     eta_min_est = est_total_runs / max(1, int(runs_per_min))
@@ -268,7 +267,7 @@ if run_clicked:
             # Optimization modes: no speed grid
             mach_values = None
             kias_values = None
-        alt_values = build_int_range(int(alt_start_eff), int(alt_end), int(alt_step))
+        alt_values = build_int_range(int(alt_start), int(alt_end), int(alt_step))
 
         t0 = time.perf_counter()
         df = run_payload_range_batch(

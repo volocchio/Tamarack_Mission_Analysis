@@ -212,22 +212,14 @@ with st.sidebar:
             tamarack_max_payload = max(0, tamarack_mzfw - st.session_state.bow_tamarack)
     else:
 # Set initial values based on aircraft model
-        if aircraft_model == "M2":
-            ramp_fuel = 3440.0  # Default fuel for M2
-        else:
-            ramp_fuel = 3440.0  # Default fuel for other models
+        ramp_fuel = float(max_fuel)
         initial_payload = 0.0
 
     # Prevent negative payloads
     initial_payload = max(0, initial_payload)
     ramp_fuel = max(0, ramp_fuel)
     ramp_fuel = min(ramp_fuel, max_fuel)
-    # UI fuel is takeoff (brake release) fuel; ramp fuel = takeoff fuel + taxi fuel
-    initial_fuel = max(0, float(ramp_fuel) - float(taxi_fuel_default))
-    try:
-        initial_fuel = min(float(initial_fuel), max(0.0, float(max_fuel) - float(taxi_fuel_default)))
-    except Exception:
-        pass
+    initial_fuel = float(ramp_fuel)
 
     # Store initial values in session state
     st.session_state.initial_values = {
@@ -237,6 +229,23 @@ with st.sidebar:
         'reserve_fuel': int(reserve_fuel_default),
         'cruise_altitude': int(ceiling)
     }
+
+    try:
+        if 'fuel_input_flatwing' not in st.session_state:
+            st.session_state['fuel_input_flatwing'] = int(max_fuel)
+    except Exception:
+        pass
+    try:
+        if 'fuel_input_tamarack' not in st.session_state:
+            st.session_state['fuel_input_tamarack'] = int(tamarack_max_fuel) if 'tamarack_max_fuel' in locals() else int(max_fuel)
+    except Exception:
+        pass
+    try:
+        if weight_option_changed and weight_option == "Max Fuel (Fill Tanks, Adjust Payload to MRW)":
+            st.session_state['fuel_input_flatwing'] = int(max_fuel)
+            st.session_state['fuel_input_tamarack'] = int(tamarack_max_fuel) if 'tamarack_max_fuel' in locals() else int(max_fuel)
+    except Exception:
+        pass
 
     # Weight inputs - Flatwing
     st.subheader('Flatwing Weight Adjustment')
@@ -291,12 +300,12 @@ with st.sidebar:
     with col2:
         # Second column - Fuel inputs
         fuel_input_f = st.number_input(
-            "Takeoff Fuel (lb)",
+            "Start-up Fuel (lb)",
             min_value=0,
-            max_value=max(0, int(max_fuel) - int(st.session_state.initial_values.get('taxi_fuel', int(taxi_fuel_default)))),
+            max_value=int(max_fuel),
             value=st.session_state.initial_values.get('fuel', int(initial_fuel)),
             step=100,
-            help=f"Takeoff fuel (after taxi). Total fuel capacity: {int(max_fuel):,} lb",
+            help=f"Fuel before engine start (ramp fuel). Total fuel capacity: {int(max_fuel):,} lb",
             key="fuel_input_flatwing"
         )
         
@@ -317,6 +326,11 @@ with st.sidebar:
             step=10,
             key="taxi_fuel_input_flatwing"
         )
+
+        try:
+            st.caption(f"Takeoff Fuel (brake release) (lb): {max(0, int(float(fuel_input_f) - float(taxi_fuel_f))):,}")
+        except Exception:
+            pass
         
         cruise_altitude_f = st.number_input(
             "Cruise Altitude Goal (ft)",
@@ -403,12 +417,12 @@ with st.sidebar:
     with col5:
         # Second column - Fuel inputs
         fuel_input_t = st.number_input(
-            "Takeoff Fuel (lb)",
+            "Start-up Fuel (lb)",
             min_value=0,
-            max_value=max(0, int((tamarack_max_fuel if 'tamarack_max_fuel' in locals() else max_fuel)) - int(st.session_state.initial_values.get('taxi_fuel', int(taxi_fuel_default)))),
+            max_value=int((tamarack_max_fuel if 'tamarack_max_fuel' in locals() else max_fuel)),
             value=st.session_state.initial_values.get('fuel', int(initial_fuel)),
             step=100,
-            help=f"Takeoff fuel (after taxi). Total fuel capacity: {int((tamarack_max_fuel if 'tamarack_max_fuel' in locals() else max_fuel)):,} lb",
+            help=f"Fuel before engine start (ramp fuel). Total fuel capacity: {int((tamarack_max_fuel if 'tamarack_max_fuel' in locals() else max_fuel)):,} lb",
             key="fuel_input_tamarack"
         )
         
@@ -429,6 +443,11 @@ with st.sidebar:
             step=10,
             key="taxi_fuel_input_tamarack"
         )
+
+        try:
+            st.caption(f"Takeoff Fuel (brake release) (lb): {max(0, int(float(fuel_input_t) - float(taxi_fuel_t))):,}")
+        except Exception:
+            pass
         
         cruise_altitude_t = st.number_input(
             "Cruise Altitude Goal (ft)",
@@ -448,30 +467,34 @@ with st.sidebar:
         payload_t = 0
         fuel_t = 0
 
-    # Enforce that takeoff fuel + taxi fuel does not exceed tank capacity
+    # Enforce that ramp fuel does not exceed tank capacity and taxi fuel does not exceed ramp fuel
     try:
         max_fuel_f = float(max_fuel)
-        if float(fuel_f) + float(taxi_fuel_f) > max_fuel_f + 1e-6:
-            st.error(f"Flatwing takeoff fuel + taxi fuel exceeds max fuel capacity ({int(max_fuel_f):,} lb). Reduce takeoff fuel or taxi fuel.")
+        if float(fuel_f) > max_fuel_f + 1e-6:
+            st.error(f"Flatwing fuel before start exceeds max fuel capacity ({int(max_fuel_f):,} lb).")
+            st.stop()
+        if float(taxi_fuel_f) > float(fuel_f) + 1e-6:
+            st.error("Flatwing taxi fuel exceeds fuel before start (would create negative takeoff fuel).")
             st.stop()
     except Exception:
         pass
     try:
         max_fuel_t = float(tamarack_max_fuel) if 'tamarack_max_fuel' in locals() else float(max_fuel)
-        if float(fuel_t) + float(taxi_fuel_t) > max_fuel_t + 1e-6:
-            st.error(f"Tamarack takeoff fuel + taxi fuel exceeds max fuel capacity ({int(max_fuel_t):,} lb). Reduce takeoff fuel or taxi fuel.")
+        if float(fuel_t) > max_fuel_t + 1e-6:
+            st.error(f"Tamarack fuel before start exceeds max fuel capacity ({int(max_fuel_t):,} lb).")
+            st.stop()
+        if float(taxi_fuel_t) > float(fuel_t) + 1e-6:
+            st.error("Tamarack taxi fuel exceeds fuel before start (would create negative takeoff fuel).")
             st.stop()
     except Exception:
         pass
 
-    # Convert UI takeoff fuel (at brake release) to ramp fuel for the simulator
-    # because run_simulation subtracts taxi_fuel internally.
     try:
-        ramp_fuel_f = float(fuel_f) + float(taxi_fuel_f)
+        ramp_fuel_f = float(fuel_f)
     except Exception:
         ramp_fuel_f = fuel_f
     try:
-        ramp_fuel_t = float(fuel_t) + float(taxi_fuel_t)
+        ramp_fuel_t = float(fuel_t)
     except Exception:
         ramp_fuel_t = fuel_t
 
@@ -513,6 +536,21 @@ with st.sidebar:
         help="Manual: set tri-level per-mod biases. Auto: enter real-world data per mod."
     )
 
+    if st.button("Reset Bias Sliders", key="reset_bias_sliders"):
+        for _k in (
+            'tam_sfc_low', 'tam_sfc_mid', 'tam_sfc_high', 'tam_thrust_low', 'tam_thrust_mid', 'tam_thrust_high',
+            'flat_sfc_low', 'flat_sfc_mid', 'flat_sfc_high', 'flat_thrust_low', 'flat_thrust_mid', 'flat_thrust_high',
+            'tam_drag_cdo_delta_pct', 'tam_drag_k_delta_pct', 'flat_drag_cdo_delta_pct', 'flat_drag_k_delta_pct',
+        ):
+            try:
+                st.session_state[_k] = 0
+            except Exception:
+                pass
+        try:
+            st.session_state['applied_biases'] = {}
+        except Exception:
+            pass
+
     def _ss_int(key: str, default: int = 0) -> int:
         try:
             return int(st.session_state.get(key, default))
@@ -544,6 +582,25 @@ with st.sidebar:
         try:
             if _k not in st.session_state:
                 st.session_state[_k] = ("Both" if _k == 'autobias_target' else 0)
+            if _k != 'autobias_target':
+                v = st.session_state.get(_k)
+                if v is None:
+                    st.session_state[_k] = 0
+                else:
+                    try:
+                        st.session_state[_k] = int(v)
+                    except Exception:
+                        st.session_state[_k] = 0
+                if _k in ('tam_drag_cdo_delta_pct', 'tam_drag_k_delta_pct', 'flat_drag_cdo_delta_pct', 'flat_drag_k_delta_pct'):
+                    try:
+                        st.session_state[_k] = max(-10, min(10, int(st.session_state[_k])))
+                    except Exception:
+                        st.session_state[_k] = 0
+                else:
+                    try:
+                        st.session_state[_k] = max(-20, min(20, int(st.session_state[_k])))
+                    except Exception:
+                        st.session_state[_k] = 0
         except Exception:
             pass
 

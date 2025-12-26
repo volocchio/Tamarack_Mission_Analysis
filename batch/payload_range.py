@@ -63,6 +63,35 @@ def payload_sweep(max_payload_lb: float, num_steps: int) -> list[int]:
 
 def _write_plot_file(fig, out_path: Path, width: int, height: int, scale: int) -> tuple[bool, str | None, Path | None]:
     try:
+        if fig is None or not hasattr(fig, "data") or fig.data is None or len(fig.data) == 0:
+            return True, None, None
+    except Exception:
+        return True, None, None
+
+    try:
+        has_numeric_points = False
+        for tr in fig.data:
+            try:
+                x = getattr(tr, "x", None)
+                y = getattr(tr, "y", None)
+                if x is None or y is None:
+                    continue
+                x_num = pd.to_numeric(pd.Series(np.array(x, dtype=object)), errors="coerce").to_numpy()
+                y_num = pd.to_numeric(pd.Series(np.array(y, dtype=object)), errors="coerce").to_numpy()
+                n = min(int(x_num.shape[0]), int(y_num.shape[0]))
+                if n <= 0:
+                    continue
+                mask = np.isfinite(x_num[:n]) & np.isfinite(y_num[:n])
+                if bool(np.any(mask)):
+                    has_numeric_points = True
+                    break
+            except Exception:
+                continue
+        if not has_numeric_points:
+            return True, None, None
+    except Exception:
+        return True, None, None
+    try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
@@ -889,6 +918,14 @@ def run_payload_range_batch(
                             d_mod = df_alt[df_alt["mod"] == mod]
                             for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
                                 d_dev = d_mod[pd.to_numeric(d_mod["isa_dev"], errors="coerce") == dev]
+                                d_x = pd.to_numeric(d_dev.get("cruise_alt"), errors="coerce")
+                                d_y = pd.to_numeric(d_dev.get(y_col), errors="coerce")
+                                try:
+                                    d_xy = pd.DataFrame({"x": d_x, "y": d_y}).dropna()
+                                except Exception:
+                                    d_xy = pd.DataFrame()
+                                if d_xy is None or d_xy.empty:
+                                    continue
                                 try:
                                     att_m = pd.to_numeric(d_dev.get("achieved_mach"), errors="coerce").dropna()
                                     att_m_txt = f"M {att_m.max():.2f}" if len(att_m) > 0 else "M —"
@@ -901,8 +938,8 @@ def run_payload_range_batch(
                                     att_fl_txt = "FL—"
                                 color = "red" if mod == "Flatwing" else "green"
                                 fig.add_trace(go.Scatter(
-                                    x=d_dev["cruise_alt"],
-                                    y=d_dev[y_col],
+                                    x=d_xy["x"],
+                                    y=d_xy["y"],
                                     mode="lines+markers",
                                     name=f"{'BL' if mod=='Flatwing' else 'Mod'} Max Achieved {att_m_txt}, Attained {att_fl_txt} - ISA {int(dev):+d}°C",
                                     line=dict(color=color, dash=(
@@ -923,12 +960,13 @@ def run_payload_range_batch(
                                     ), size=6)
                                 ))
                         fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title=y_label, template="plotly_white")
-                        fname = aircraft_summary_dir / out_name
-                        ok, err, written_path = _write_plot_file(fig, fname, width=1600, height=900, scale=2)
-                        if (not ok) and err:
-                            summary_plot_export_errors.append(
-                                f"{aircraft} mode=mct family target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
-                            )
+                        if fig.data and len(fig.data) > 0:
+                            fname = aircraft_summary_dir / out_name
+                            ok, err, written_path = _write_plot_file(fig, fname, width=1600, height=900, scale=2)
+                            if (not ok) and err:
+                                summary_plot_export_errors.append(
+                                    f"{aircraft} mode=mct family target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                                )
                     # Range vs Altitude (MCT)
                     _plot_altitude_family(
                         y_col="total_dist_nm",
@@ -959,7 +997,15 @@ def run_payload_range_batch(
                             d_mod = df_alt[df_alt["mod"] == mod]
                             for dev in sorted(pd.to_numeric(d_mod["isa_dev"], errors="coerce").dropna().unique().tolist()):
                                 d_dev = d_mod[pd.to_numeric(d_mod["isa_dev"], errors="coerce") == dev]
-                                # Legend metrics
+                                d_x = pd.to_numeric(d_dev.get("cruise_alt"), errors="coerce")
+                                d_y = pd.to_numeric(d_dev.get(y_col), errors="coerce")
+                                try:
+                                    d_xy = pd.DataFrame({"x": d_x, "y": d_y}).dropna()
+                                except Exception:
+                                    d_xy = pd.DataFrame()
+                                if d_xy is None or d_xy.empty:
+                                    continue
+
                                 try:
                                     att_m = pd.to_numeric(d_dev.get("achieved_mach"), errors="coerce").dropna()
                                     att_m_txt = f"M {att_m.max():.2f}" if len(att_m) > 0 else "M —"
@@ -970,10 +1016,11 @@ def run_payload_range_batch(
                                     att_fl_txt = f"FL{int(att_alt.max()/100)}" if len(att_alt) > 0 else "FL—"
                                 except Exception:
                                     att_fl_txt = "FL—"
+
                                 color = "red" if mod == "Flatwing" else "green"
                                 fig.add_trace(go.Scatter(
-                                    x=d_dev["cruise_alt"],
-                                    y=d_dev[y_col],
+                                    x=d_xy["x"],
+                                    y=d_xy["y"],
                                     mode="lines+markers",
                                     name=f"{'BL' if mod=='Flatwing' else 'Mod'} Max Achieved {att_m_txt}, Attained {att_fl_txt} - ISA {int(dev):+d}°C",
                                     line=dict(color=color, dash=(
@@ -993,13 +1040,15 @@ def run_payload_range_batch(
                                         "triangle-down"
                                     ), size=6)
                                 ))
+
                         fig.update_layout(title=title_txt, xaxis_title="Target Altitude (ft)", yaxis_title=y_label, template="plotly_white")
-                        fname = aircraft_summary_dir / out_name
-                        ok, err, written_path = _write_plot_file(fig, fname, width=1600, height=900, scale=2)
-                        if (not ok) and err:
-                            summary_plot_export_errors.append(
-                                f"{aircraft} mode=optimized family target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
-                            )
+                        if fig.data and len(fig.data) > 0:
+                            fname = aircraft_summary_dir / out_name
+                            ok, err, written_path = _write_plot_file(fig, fname, width=1600, height=900, scale=2)
+                            if (not ok) and err:
+                                summary_plot_export_errors.append(
+                                    f"{aircraft} mode=opt family target={fname.name}: {err}; wrote {written_path.name if written_path else 'nothing'}"
+                                )
                     # Range vs Altitude (Optimized)
                     _plot_opt_family(
                         y_col="total_dist_nm",
