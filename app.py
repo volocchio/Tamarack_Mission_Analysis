@@ -192,19 +192,19 @@ with st.sidebar:
 
     # Get initial values based on weight option
     if weight_option == "Max Fuel (Fill Tanks, Adjust Payload to MRW)":
-        initial_fuel = float(max_fuel)
+        ramp_fuel = float(max_fuel)
         initial_payload = float(min(flatwing_mzfw - flatwing_bow, mrw - (flatwing_bow + max_fuel)))
-        rw = flatwing_bow + initial_payload + initial_fuel
+        rw = flatwing_bow + initial_payload + ramp_fuel
         tow = rw - taxi_fuel_default
         if tow > mtow:
-            initial_fuel = mtow - (flatwing_bow + initial_payload) + taxi_fuel_default
-            if initial_fuel < 0:
-                initial_fuel = 0
+            ramp_fuel = mtow - (flatwing_bow + initial_payload) + taxi_fuel_default
+            if ramp_fuel < 0:
+                ramp_fuel = 0
                 initial_payload = mtow - flatwing_bow + taxi_fuel_default
     elif weight_option == "Max Payload (Fill Payload to MZFW, Adjust Fuel to MRW)":
         initial_payload = float(flatwing_mzfw - flatwing_bow)  # Calculate max payload as MZFW - BOW
-        initial_fuel = float(min(max_fuel, mrw - (flatwing_bow + initial_payload)))
-        if initial_fuel == max_fuel:
+        ramp_fuel = float(min(max_fuel, mrw - (flatwing_bow + initial_payload)))
+        if ramp_fuel == max_fuel:
             initial_payload = float(min(flatwing_mzfw - flatwing_bow, mrw - (flatwing_bow + max_fuel)))
         
         # Update Tamarack payload in session state when Max Payload is selected
@@ -213,15 +213,21 @@ with st.sidebar:
     else:
 # Set initial values based on aircraft model
         if aircraft_model == "M2":
-            initial_fuel = 3440.0  # Default fuel for M2
+            ramp_fuel = 3440.0  # Default fuel for M2
         else:
-            initial_fuel = 3440.0  # Default fuel for other models
+            ramp_fuel = 3440.0  # Default fuel for other models
         initial_payload = 0.0
 
     # Prevent negative payloads
     initial_payload = max(0, initial_payload)
-    initial_fuel = max(0, initial_fuel)
-    initial_fuel = min(initial_fuel, max_fuel)
+    ramp_fuel = max(0, ramp_fuel)
+    ramp_fuel = min(ramp_fuel, max_fuel)
+    # UI fuel is takeoff (brake release) fuel; ramp fuel = takeoff fuel + taxi fuel
+    initial_fuel = max(0, float(ramp_fuel) - float(taxi_fuel_default))
+    try:
+        initial_fuel = min(float(initial_fuel), max(0.0, float(max_fuel) - float(taxi_fuel_default)))
+    except Exception:
+        pass
 
     # Store initial values in session state
     st.session_state.initial_values = {
@@ -285,12 +291,12 @@ with st.sidebar:
     with col2:
         # Second column - Fuel inputs
         fuel_input_f = st.number_input(
-            "Fuel (lb)",
+            "Takeoff Fuel (lb)",
             min_value=0,
-            max_value=int(max_fuel),
+            max_value=max(0, int(max_fuel) - int(st.session_state.initial_values.get('taxi_fuel', int(taxi_fuel_default)))),
             value=st.session_state.initial_values.get('fuel', int(initial_fuel)),
             step=100,
-            help=f"Maximum fuel: {int(max_fuel):,} lb",
+            help=f"Takeoff fuel (after taxi). Total fuel capacity: {int(max_fuel):,} lb",
             key="fuel_input_flatwing"
         )
         
@@ -397,12 +403,12 @@ with st.sidebar:
     with col5:
         # Second column - Fuel inputs
         fuel_input_t = st.number_input(
-            "Fuel (lb)",
+            "Takeoff Fuel (lb)",
             min_value=0,
-            max_value=int(max_fuel),
+            max_value=max(0, int((tamarack_max_fuel if 'tamarack_max_fuel' in locals() else max_fuel)) - int(st.session_state.initial_values.get('taxi_fuel', int(taxi_fuel_default)))),
             value=st.session_state.initial_values.get('fuel', int(initial_fuel)),
             step=100,
-            help=f"Maximum fuel: {int(max_fuel):,} lb",
+            help=f"Takeoff fuel (after taxi). Total fuel capacity: {int((tamarack_max_fuel if 'tamarack_max_fuel' in locals() else max_fuel)):,} lb",
             key="fuel_input_tamarack"
         )
         
@@ -441,6 +447,33 @@ with st.sidebar:
     except Exception:
         payload_t = 0
         fuel_t = 0
+
+    # Enforce that takeoff fuel + taxi fuel does not exceed tank capacity
+    try:
+        max_fuel_f = float(max_fuel)
+        if float(fuel_f) + float(taxi_fuel_f) > max_fuel_f + 1e-6:
+            st.error(f"Flatwing takeoff fuel + taxi fuel exceeds max fuel capacity ({int(max_fuel_f):,} lb). Reduce takeoff fuel or taxi fuel.")
+            st.stop()
+    except Exception:
+        pass
+    try:
+        max_fuel_t = float(tamarack_max_fuel) if 'tamarack_max_fuel' in locals() else float(max_fuel)
+        if float(fuel_t) + float(taxi_fuel_t) > max_fuel_t + 1e-6:
+            st.error(f"Tamarack takeoff fuel + taxi fuel exceeds max fuel capacity ({int(max_fuel_t):,} lb). Reduce takeoff fuel or taxi fuel.")
+            st.stop()
+    except Exception:
+        pass
+
+    # Convert UI takeoff fuel (at brake release) to ramp fuel for the simulator
+    # because run_simulation subtracts taxi_fuel internally.
+    try:
+        ramp_fuel_f = float(fuel_f) + float(taxi_fuel_f)
+    except Exception:
+        ramp_fuel_f = fuel_f
+    try:
+        ramp_fuel_t = float(fuel_t) + float(taxi_fuel_t)
+    except Exception:
+        ramp_fuel_t = fuel_t
 
     # Wing type selection
     st.subheader('Aircraft Configuration')
@@ -836,6 +869,8 @@ with st.sidebar:
                     weight_df_tamarack=lr.get('weight_df_t'),
                     weight_df_single=lr.get('weight_df_single'),
                     modes_summary_df=lr.get('modes_summary_df'),
+                    results_by_mode=lr.get('results_by_mode'),
+                    chosen_mode=lr.get('chosen_mode'),
                     fuel_cost_per_gal=fuel_cost_per_gal
                 )
         except Exception as e:
@@ -1424,7 +1459,7 @@ with st.sidebar:
                         pass
                     t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
                         dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-                        payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                        payload_t, ramp_fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
                         winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
                         sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
                         thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
@@ -1450,7 +1485,7 @@ with st.sidebar:
                         pass
                     f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
                         dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                        payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                        payload_f, ramp_fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
                         winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
                         sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
                         thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
@@ -1476,7 +1511,7 @@ with st.sidebar:
                     pass
                 t_data, t_results, dep_lat, dep_lon, arr_lat, arr_lon, t_out = run_simulation(
                     dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-                    payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                    payload_t, ramp_fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
                     winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
                     sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
                     thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
@@ -1502,7 +1537,7 @@ with st.sidebar:
                     pass
                 f_data, f_results, dep_lat, dep_lon, arr_lat, arr_lon, f_out = run_simulation(
                     dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                    payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                    payload_f, ramp_fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
                     winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=mode,
                     sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
                     thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
@@ -1594,7 +1629,7 @@ with st.sidebar:
             if "Tamarack" in mods_available:
                 tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
                     dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-                    payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                    payload_t, ramp_fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
                     winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
                     sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
                     thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
@@ -1604,7 +1639,7 @@ with st.sidebar:
             if "Flatwing" in mods_available:
                 flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
                     dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                    payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                    payload_f, ramp_fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
                     winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
                     sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
                     thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
@@ -1614,7 +1649,7 @@ with st.sidebar:
         elif wing_type == "Tamarack":
             tamarack_data, tamarack_results, dep_lat, dep_lon, arr_lat, arr_lon, tamarack_output_file = run_simulation(
                 dep_airport_code, arr_airport_code, aircraft_model, "Tamarack", takeoff_flap,
-                payload_t, fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
+                payload_t, ramp_fuel_t, taxi_fuel_t, reserve_fuel_t, cruise_altitude_t,
                 winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
                 sfc_bias_low=tam_sfc_low, sfc_bias_mid=tam_sfc_mid, sfc_bias_high=tam_sfc_high,
                 thrust_bias_low=tam_thrust_low, thrust_bias_mid=tam_thrust_mid, thrust_bias_high=tam_thrust_high,
@@ -1624,7 +1659,7 @@ with st.sidebar:
         elif wing_type == "Flatwing":
             flatwing_data, flatwing_results, dep_lat, dep_lon, arr_lat, arr_lon, flatwing_output_file = run_simulation(
                 dep_airport_code, arr_airport_code, aircraft_model, "Flatwing", takeoff_flap,
-                payload_f, fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
+                payload_f, ramp_fuel_f, taxi_fuel_f, reserve_fuel_f, cruise_altitude_f,
                 winds_temps_source, v1_cut_enabled, write_output_file, cruise_mode=cruise_mode,
                 sfc_bias_low=flat_sfc_low, sfc_bias_mid=flat_sfc_mid, sfc_bias_high=flat_sfc_high,
                 thrust_bias_low=flat_thrust_low, thrust_bias_mid=flat_thrust_mid, thrust_bias_high=flat_thrust_high,
@@ -1664,6 +1699,8 @@ with st.sidebar:
             'weight_df_t': (weight_df_t if 'weight_df_t' in locals() else None),
             'weight_df_single': (weight_df if 'weight_df' in locals() else None),
             'modes_summary_df': (modes_summary_df if 'modes_summary_df' in locals() else None),
+            'results_by_mode': (results_by_mode if 'results_by_mode' in locals() else None),
+            'chosen_mode': (chosen_mode if 'chosen_mode' in locals() else None),
             'cruise_altitude_f': locals().get('cruise_altitude_f', None),
             'cruise_altitude_t': locals().get('cruise_altitude_t', None),
             'fuel_f': locals().get('fuel_f', None),
@@ -1734,78 +1771,79 @@ with st.sidebar:
             winds_temps_source,
             isa_dev,
             (cruise_altitude_f if wing_type == "Flatwing" else cruise_altitude_t),
-            dep_airport_code,
-            arr_airport_code,
+            dep_airport_code, arr_airport_code,
             (fuel_f if wing_type == "Flatwing" else fuel_t),
             report_output_dir=report_output_dir,
             weight_df_flatwing=(weight_df_f if 'weight_df_f' in locals() else None),
             weight_df_tamarack=(weight_df_t if 'weight_df_t' in locals() else None),
             weight_df_single=(weight_df if 'weight_df' in locals() else None),
             modes_summary_df=(modes_summary_df if 'modes_summary_df' in locals() else None),
+            results_by_mode=locals().get('results_by_mode'),
+            chosen_mode=locals().get('chosen_mode'),
             fuel_cost_per_gal=fuel_cost_per_gal
         )
-     
-    # Display output file information (for all wing types)
-    main.markdown("---")
-    main.subheader('Output Files')
-    
-    output_files = []
-    
-    if wing_type == "Comparison":
-        if "Tamarack" in mods_available and 'tamarack_output_file' in locals():
-            output_files.append((f"{aircraft_model} Tamarack", tamarack_output_file))
-        if "Flatwing" in mods_available and 'flatwing_output_file' in locals():
-            output_files.append((f"{aircraft_model} Flatwing", flatwing_output_file))
-    elif wing_type == "Tamarack" and 'tamarack_output_file' in locals():
-        output_files.append((f"{aircraft_model} Tamarack", tamarack_output_file))
-    elif wing_type == "Flatwing" and 'flatwing_output_file' in locals():
-        output_files.append((f"{aircraft_model} Flatwing", flatwing_output_file))
-    
-    if output_files:
-        main.write("**Time history data files have been created:**")
-        for config_name, filepath in output_files:
-            main.success(f" {config_name}: `{filepath}`")
-            
-        # Show directory information
-        output_dir = os.path.dirname(output_files[0][1]) if output_files else "output"
-        main.info(f" All files saved in: `{output_dir}`")
-        main.markdown("**Downloads**")
-        dl_cols = main.columns(min(3, max(1, len(output_files))))
-        for i, (config_name, filepath) in enumerate(output_files):
-            try:
-                with open(filepath, "rb") as f:
-                    data = f.read()
-                filename = os.path.basename(filepath) or f"{config_name}.csv"
-                with dl_cols[i % len(dl_cols)]:
-                    main.download_button(
-                        label=f"Download {config_name} CSV",
-                        data=data,
-                        file_name=filename,
-                        mime="text/csv",
-                    )
-            except Exception:
-                pass
 
+# Display output file information (for all wing types)
+main.markdown("---")
+main.subheader('Output Files')
+    
+output_files = []
+    
+if wing_type == "Comparison":
+    if "Tamarack" in mods_available and 'tamarack_output_file' in locals():
+        output_files.append((f"{aircraft_model} Tamarack", tamarack_output_file))
+    if "Flatwing" in mods_available and 'flatwing_output_file' in locals():
+        output_files.append((f"{aircraft_model} Flatwing", flatwing_output_file))
+elif wing_type == "Tamarack" and 'tamarack_output_file' in locals():
+    output_files.append((f"{aircraft_model} Tamarack", tamarack_output_file))
+elif wing_type == "Flatwing" and 'flatwing_output_file' in locals():
+    output_files.append((f"{aircraft_model} Flatwing", flatwing_output_file))
+    
+if output_files:
+    main.write("**Time history data files have been created:**")
+    for config_name, filepath in output_files:
+        main.success(f" {config_name}: `{filepath}`")
+            
+    # Show directory information
+    output_dir = os.path.dirname(output_files[0][1]) if output_files else "output"
+    main.info(f" All files saved in: `{output_dir}`")
+    main.markdown("**Downloads**")
+    dl_cols = main.columns(min(3, max(1, len(output_files))))
+    for i, (config_name, filepath) in enumerate(output_files):
         try:
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-                if os.path.isdir(output_dir):
-                    for root, _, files in os.walk(output_dir):
-                        for fn in files:
-                            full_path = os.path.join(root, fn)
-                            arc_name = os.path.relpath(full_path, start=output_dir)
-                            zf.write(full_path, arcname=arc_name)
-                else:
-                    for _, filepath in output_files:
-                        if os.path.isfile(filepath):
-                            zf.write(filepath, arcname=os.path.basename(filepath))
-            zip_name = f"{os.path.basename(output_dir) or 'outputs'}.zip"
-            main.download_button(
-                label="Download all outputs (zip)",
-                data=buf.getvalue(),
-                file_name=zip_name,
-                mime="application/zip",
-            )
+            with open(filepath, "rb") as f:
+                data = f.read()
+            filename = os.path.basename(filepath) or f"{config_name}.csv"
+            with dl_cols[i % len(dl_cols)]:
+                main.download_button(
+                    label=f"Download {config_name} CSV",
+                    data=data,
+                    file_name=filename,
+                    mime="text/csv",
+                )
         except Exception:
             pass
-        main.write("*Files contain simulation parameters sampled every 5 seconds*")
+
+    try:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            if os.path.isdir(output_dir):
+                for root, _, files in os.walk(output_dir):
+                    for fn in files:
+                        full_path = os.path.join(root, fn)
+                        arc_name = os.path.relpath(full_path, start=output_dir)
+                        zf.write(full_path, arcname=arc_name)
+            else:
+                for _, filepath in output_files:
+                    if os.path.isfile(filepath):
+                        zf.write(filepath, arcname=os.path.basename(filepath))
+        zip_name = f"{os.path.basename(output_dir) or 'outputs'}.zip"
+        main.download_button(
+            label="Download all outputs (zip)",
+            data=buf.getvalue(),
+            file_name=zip_name,
+            mime="application/zip",
+        )
+    except Exception:
+        pass
+    main.write("*Files contain simulation parameters sampled every 5 seconds*")

@@ -254,7 +254,7 @@ def write_metrics_with_headings(results_dict, label, route_distance_nm: float | 
             except Exception:
                 pass
 
-def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results):
+def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwing_results, results_by_mode=None, chosen_mode=None):
     st.subheader("Flight Profile Charts")
 
     figs = {}
@@ -263,7 +263,7 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
         st.info("No valid flight profiles to plot.")
         return figs
 
-    def plot_dual_y(title, key_name, x, y1_label, y1_tam, y1_flat, y2_label, y2_tam, y2_flat):
+    def plot_dual_y(title, key_name, x, y1_label, y1_tam, y1_flat, y2_label, y2_tam, y2_flat, render: bool = True):
         fig = go.Figure()
         if not tamarack_data.empty:
             fig.add_trace(go.Scatter(x=tamarack_data[x], y=tamarack_data[y1_tam],
@@ -286,8 +286,10 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
             title=title,
             legend=dict(x=0.01, y=1.15, orientation="h")
         )
-        st.plotly_chart(fig, use_container_width=True)
+        if render:
+            st.plotly_chart(fig, use_container_width=True)
         figs[key_name] = fig
+        return fig
 
     def plot_single_y(title, key_name, x, y_label, y_tam, y_flat):
         fig = go.Figure()
@@ -312,9 +314,80 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
         figs[key_name] = fig
         return fig
 
-    plot_dual_y("Altitude and Mach vs. Distance", "alt_mach", "Distance (NM)",
+    fig_alt_mach = plot_dual_y("Altitude and Mach vs. Distance", "alt_mach", "Distance (NM)",
                 "Altitude (ft)", "Altitude (ft)", "Altitude (ft)",
-                "Mach", "Mach", "Mach")
+                "Mach", "Mach", "Mach", render=False)
+
+    try:
+        overlay_single = (
+            results_by_mode is not None and isinstance(results_by_mode, dict)
+            and chosen_mode is not None
+            and ((tamarack_data is not None and not tamarack_data.empty) ^ (flatwing_data is not None and not flatwing_data.empty))
+        )
+    except Exception:
+        overlay_single = False
+
+    if fig_alt_mach is not None:
+        if overlay_single:
+            overlay_key = "Tamarack" if (tamarack_data is not None and not tamarack_data.empty) else "Flatwing"
+            chosen_short = {"MCT (Max Thrust)": "MCT", "Max Range": "LRC", "Max Endurance": "Max End"}.get(str(chosen_mode), str(chosen_mode))
+            base_mach_line = None
+            try:
+                for tr in fig_alt_mach.data:
+
+                    if overlay_key == "Tamarack":
+                        if tr.name == "Mach (Tamarack)":
+                            tr.name = f"Mach ({chosen_short})"
+                    else:
+                        if tr.name == "Mach (Flatwing)":
+                            tr.name = f"Mach ({chosen_short})"
+
+                    try:
+                        if base_mach_line is None and getattr(tr, 'yaxis', None) == 'y2' and isinstance(getattr(tr, 'name', ''), str) and tr.name.startswith('Mach'):
+                            try:
+                                base_mach_line = dict(tr.line)
+                            except Exception:
+                                base_mach_line = None
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            def _add_mode_mach(mode_key: str, color: str):
+                if str(mode_key) == str(chosen_mode):
+                    return
+                try:
+                    df_mode = results_by_mode.get(mode_key, {}).get(overlay_key, (pd.DataFrame(), {}, ""))[0]
+                except Exception:
+                    df_mode = pd.DataFrame()
+                if df_mode is None or df_mode.empty:
+                    return
+                mode_short = {"MCT (Max Thrust)": "MCT", "Max Range": "LRC", "Max Endurance": "Max End"}.get(str(mode_key), str(mode_key))
+                if "Distance (NM)" in df_mode.columns and "Mach" in df_mode.columns:
+                    try:
+                        line_style = dict(base_mach_line) if base_mach_line is not None else {}
+                    except Exception:
+                        line_style = {}
+                    try:
+                        line_style['color'] = color
+                    except Exception:
+                        line_style = dict(color=color)
+                    fig_alt_mach.add_trace(go.Scatter(
+                        x=df_mode["Distance (NM)"],
+                        y=df_mode["Mach"],
+                        name=f"Mach ({mode_short})",
+                        yaxis='y2',
+                        line=line_style
+                    ))
+
+            _add_mode_mach("Max Range", "green")
+            _add_mode_mach("Max Endurance", "black")
+
+        try:
+            st.plotly_chart(fig_alt_mach, use_container_width=True)
+            figs["alt_mach"] = fig_alt_mach
+        except Exception:
+            pass
 
     fig = go.Figure()
     if not tamarack_data.empty:
@@ -337,6 +410,53 @@ def plot_flight_profiles(tamarack_data, flatwing_data, tamarack_results, flatwin
         if "Distance (NM)" in flatwing_data.columns and "VKIAS (kts)" in flatwing_data.columns:
             fig.add_trace(go.Scatter(x=flatwing_data["Distance (NM)"], y=flatwing_data["VKIAS (kts)"],
                                      name="IAS (Flatwing)", yaxis='y2', line=dict(color="red", dash="dash")))
+
+    if results_by_mode is not None and isinstance(results_by_mode, dict) and chosen_mode is not None:
+        key = "Tamarack" if (tamarack_data is not None and not tamarack_data.empty) else "Flatwing"
+        try:
+            for tr in fig.data:
+                if key == "Tamarack":
+                    if tr.name == "TAS (Tamarack)":
+                        tr.name = f"TAS ({chosen_short})"
+                    elif tr.name == "IAS (Tamarack)":
+                        tr.name = f"IAS ({chosen_short})"
+                else:
+                    if tr.name == "TAS (Flatwing)":
+                        tr.name = f"TAS ({chosen_short})"
+                    elif tr.name == "IAS (Flatwing)":
+                        tr.name = f"IAS ({chosen_short})"
+        except Exception:
+            pass
+
+        def _add_mode_speeds(mode_key: str, color: str):
+            if str(mode_key) == str(chosen_mode):
+                return
+            try:
+                df_mode = results_by_mode.get(mode_key, {}).get(key, (pd.DataFrame(), {}, ""))[0]
+            except Exception:
+                df_mode = pd.DataFrame()
+            if df_mode is None or df_mode.empty:
+                return
+            mode_short = {"MCT (Max Thrust)": "MCT", "Max Range": "LRC", "Max Endurance": "Max End"}.get(str(mode_key), str(mode_key))
+            if "Distance (NM)" in df_mode.columns and "VKTAS (kts)" in df_mode.columns:
+                fig.add_trace(go.Scatter(
+                    x=df_mode["Distance (NM)"],
+                    y=df_mode["VKTAS (kts)"],
+                    name=f"TAS ({mode_short})",
+                    yaxis='y2',
+                    line=dict(color=color, dash="solid")
+                ))
+            if "Distance (NM)" in df_mode.columns and "VKIAS (kts)" in df_mode.columns:
+                fig.add_trace(go.Scatter(
+                    x=df_mode["Distance (NM)"],
+                    y=df_mode["VKIAS (kts)"],
+                    name=f"IAS ({mode_short})",
+                    yaxis='y2',
+                    line=dict(color=color, dash="dash")
+                ))
+
+        _add_mode_speeds("Max Range", "green")
+        _add_mode_speeds("Max Endurance", "black")
 
     if fig.data:
         fig.update_layout(
@@ -490,6 +610,8 @@ def display_simulation_results(
     weight_df_tamarack: pd.DataFrame | None = None,
     weight_df_single: pd.DataFrame | None = None,
     modes_summary_df: pd.DataFrame | None = None,
+    results_by_mode=None,
+    chosen_mode=None,
     fuel_cost_per_gal: float | None = None
 ):
     def _has_reserve_fuel_exceedance(results: dict) -> bool:
@@ -613,34 +735,31 @@ def display_simulation_results(
     st.subheader("Flight Route Map")
     fig = go.Figure()
 
-    # Add range rings from departure airport using proper equirectangular projection
+    # Add range rings from departure airport using proper geodesic (great-circle) projection
     import math
     
-    def calculate_range_ring_equirectangular(center_lat, center_lon, radius_nm, num_points=72):
-        """
-        Calculate range ring points using equirectangular projection.
-        This matches the map projection for consistent display.
-        """
+    def calculate_range_ring_geodesic(center_lat, center_lon, radius_nm, num_points=72):
         ring_lats = []
         ring_lons = []
-        
-        # Convert radius from nautical miles to degrees
-        # 1 nautical mile = 1/60 degree of latitude
-        radius_deg_lat = radius_nm / 60.0
-        
-        # For equirectangular projection, longitude scaling depends on latitude
-        cos_lat = math.cos(math.radians(center_lat))
-        
-        for i in range(num_points + 1):  # +1 to close the circle
-            angle = 2 * math.pi * i / num_points
-            
-            # Calculate offsets in the equirectangular projection
-            lat_offset = radius_deg_lat * math.cos(angle)
-            lon_offset = radius_deg_lat * math.sin(angle) / cos_lat if cos_lat != 0 else 0
-            
-            ring_lats.append(center_lat + lat_offset)
-            ring_lons.append(center_lon + lon_offset)
-        
+        earth_radius_nm = 3437.75
+        lat1 = math.radians(center_lat)
+        lon1 = math.radians(center_lon)
+        d = float(radius_nm) / earth_radius_nm
+
+        for i in range(num_points + 1):
+            brng = 2.0 * math.pi * i / num_points
+            sin_lat2 = math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(brng)
+            lat2 = math.asin(max(-1.0, min(1.0, sin_lat2)))
+            lon2 = lon1 + math.atan2(
+                math.sin(brng) * math.sin(d) * math.cos(lat1),
+                math.cos(d) - math.sin(lat1) * math.sin(lat2)
+            )
+
+            lat_deg = math.degrees(lat2)
+            lon_deg = (math.degrees(lon2) + 540.0) % 360.0 - 180.0
+            ring_lats.append(lat_deg)
+            ring_lons.append(lon_deg)
+
         return ring_lats, ring_lons
     
     # Calculate range ring intervals based on total distance
@@ -654,7 +773,7 @@ def display_simulation_results(
     
     # Add regular interval range rings
     for ring_distance in range(ring_interval, int(max_range) + ring_interval, ring_interval):
-        ring_lats, ring_lons = calculate_range_ring_equirectangular(
+        ring_lats, ring_lons = calculate_range_ring_geodesic(
             dep_latitude, dep_longitude, ring_distance
         )
         
@@ -670,7 +789,7 @@ def display_simulation_results(
     
     # Add special ring for exact destination distance
     if distance_nm > 0:
-        dest_ring_lats, dest_ring_lons = calculate_range_ring_equirectangular(
+        dest_ring_lats, dest_ring_lons = calculate_range_ring_geodesic(
             dep_latitude, dep_longitude, distance_nm
         )
         
@@ -819,6 +938,63 @@ def display_simulation_results(
                         rows.append({"Metric": "Flatwing Fuel Cost", "Value": f"${f_cost:,.0f}"})
                         rows.append({"Metric": "Cost Savings", "Value": f"${cost_savings:,.0f}"})
                     st.table(pd.DataFrame(rows))
+    except Exception:
+        pass
+
+    try:
+        if results_by_mode is not None and isinstance(results_by_mode, dict) and results_by_mode:
+            def _mode_short(m: str) -> str:
+                return {"MCT (Max Thrust)": "MCT", "Max Range": "LRC", "Max Endurance": "Max End"}.get(m, str(m))
+
+            def _reserve_msg(r: dict) -> str | None:
+                try:
+                    ex = r.get('exceedances')
+                    if not ex:
+                        return None
+                    for msg in ex:
+                        if isinstance(msg, str) and 'Not enough reserve fuel at landing' in msg:
+                            return msg
+                except Exception:
+                    return None
+                return None
+
+            mode_order = ["MCT (Max Thrust)", "Max Range", "Max Endurance"]
+            ordered_modes = [m for m in mode_order if m in results_by_mode] + [m for m in results_by_mode.keys() if m not in mode_order]
+
+            configs_present = []
+            try:
+                for m in ordered_modes:
+                    for cfg in ("Tamarack", "Flatwing"):
+                        if cfg in results_by_mode.get(m, {}):
+                            configs_present.append(cfg)
+            except Exception:
+                configs_present = []
+            configs_present = [c for c in ("Tamarack", "Flatwing") if c in set(configs_present)]
+
+            rows = []
+            for m in ordered_modes:
+                for cfg in (configs_present or ["Tamarack", "Flatwing"]):
+                    try:
+                        r = results_by_mode.get(m, {}).get(cfg, (pd.DataFrame(), {}, ""))[1]
+                    except Exception:
+                        r = {}
+                    msg = _reserve_msg(r) if isinstance(r, dict) else None
+                    rows.append({
+                        "Mode": _mode_short(m),
+                        "Config": cfg,
+                        "Fuel Status": "NOT ENOUGH FUEL" if msg else "OK",
+                        "Message": msg or ""
+                    })
+
+            if rows:
+                df = pd.DataFrame(rows)
+                try:
+                    if (df['Fuel Status'] == 'NOT ENOUGH FUEL').any():
+                        st.subheader("Fuel Feasibility by Cruise Mode")
+                        st.table(df)
+                except Exception:
+                    st.subheader("Fuel Feasibility by Cruise Mode")
+                    st.table(df)
     except Exception:
         pass
 
@@ -1102,7 +1278,7 @@ def display_simulation_results(
                 df_display = df_display.reset_index(drop=True)
                 st.dataframe(df_display, use_container_width=True)
 
-    figs = plot_flight_profiles(plot_tamarack_data, plot_flatwing_data, tamarack_results, flatwing_results)
+    figs = plot_flight_profiles(plot_tamarack_data, plot_flatwing_data, tamarack_results, flatwing_results, results_by_mode=results_by_mode, chosen_mode=chosen_mode)
     # Add the route map to figs so it can be embedded in the PDF
     try:
         figs["route_map"] = fig

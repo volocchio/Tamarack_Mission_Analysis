@@ -471,7 +471,7 @@ def run_simulation(
     ac = AIRCRAFT_CONFIG[(aircraft, mod)]
     s, b, e, h, _, sfc, engines_orig, thrust_mult, _, _, _, cdo, dcdo_flap1, dcdo_flap2, \
         dcdo_flap3, dcdo_gear, mu_to, mu_lnd, bow, mzfw, mrw, mtow, max_fuel, \
-        taxi_fuel_default, reserve_fuel_default, mmo, _, clmax, clmax_1, clmax_2, m_climb, \
+        taxi_fuel_default, reserve_fuel_default, mmo, vmo, clmax, clmax_1, clmax_2, m_climb, \
         v_climb, roc_min, m_descent, v_descent = ac
 
     wind = 0  # Will be updated based on winds aloft
@@ -1077,6 +1077,13 @@ def run_simulation(
                     m_cruise = float(m_opt_override)
                 speed_goal = m_cruise
             roc_goal = 0
+            try:
+                if cruise_mode == "MCT (Max Thrust)" and alt > 10100:
+                    # Max continuous thrust: don't let a speed target artificially cap the acceleration.
+                    # Use MMO as a "high" target so the model runs at available thrust.
+                    speed_goal = float(mmo) * 0.99
+            except Exception:
+                pass
         elif segment == 8:
             if alt <= 10100:
                 speed_goal = v_u_10k
@@ -1186,6 +1193,130 @@ def run_simulation(
         thrust_bias_frac = _interp_bias3(alt, thrust_bias_low_frac, thrust_bias_mid_frac, thrust_bias_high_frac, bias_alt_low, bias_alt_mid, bias_alt_high)
         sfc_bias_frac = _interp_bias3(alt, sfc_bias_low_frac, sfc_bias_mid_frac, sfc_bias_high_frac, bias_alt_low, bias_alt_mid, bias_alt_high)
         thrust = thrust_raw * (1.0 + thrust_bias_frac)
+        try:
+            max_thrust_raw = float(thrust_raw) / max(1e-6, float(thrust_factor))
+        except Exception:
+            max_thrust_raw = float(thrust_raw) if thrust_raw is not None else 0.0
+        max_thrust_available = max_thrust_raw
+        try:
+            max_thrust_available = float(max_thrust_raw) * (1.0 + float(thrust_bias_frac))
+        except Exception:
+            max_thrust_available = float(max_thrust_raw)
+
+        # Cruise throttle control:
+        # - MCT: keep max continuous thrust (thrust_factor=1) in cruise.
+        # - Max Range / Max Endurance: throttle to the thrust required to hold the target cruise speed.
+        try:
+            if segment in (6, 7):
+                if cruise_mode == "MCT (Max Thrust)":
+                    thrust_factor = 1.0
+                elif cruise_mode in ("Max Range", "Max Endurance"):
+                    # Only apply above 10k where cruise is commanded as Mach.
+                    if alt > 10100:
+                        try:
+                            target_vktas = float(speed_goal) * float(c)
+                        except Exception:
+                            target_vktas = None
+
+                        try:
+                            v_now = float(vktas)
+                        except Exception:
+                            v_now = 0.0
+
+                        # If we're essentially at the target speed, set thrust to level-flight requirement (≈ drag).
+                        if target_vktas is not None and target_vktas > 1e-6 and v_now >= 0.99 * float(target_vktas):
+                            try:
+                                req_thrust = float(drag)
+                            except Exception:
+                                req_thrust = None
+
+                            if req_thrust is not None:
+                                if req_thrust < 100.0:
+                                    req_thrust = 100.0
+                                try:
+                                    req_thrust = min(float(req_thrust), float(max_thrust_available))
+                                except Exception:
+                                    pass
+
+                                thrust = req_thrust
+
+                                try:
+                                    if float(thrust) >= float(max_thrust_available) - 1e-6:
+                                        thrust_factor = 1.0
+                                except Exception:
+                                    pass
+
+                                # Update thrust_factor for the NEXT step based on the implied throttle setting.
+                                try:
+                                    full_thrust_raw = float(thrust_raw) / max(1e-6, float(thrust_factor))
+                                except Exception:
+                                    full_thrust_raw = float(thrust_raw) if thrust_raw is not None else 0.0
+
+                                try:
+                                    desired_no_bias = float(thrust) / max(1e-6, (1.0 + float(thrust_bias_frac)))
+                                except Exception:
+                                    desired_no_bias = float(thrust)
+
+                                if full_thrust_raw > 1e-6:
+                                    thrust_factor = max(0.05, min(1.0, desired_no_bias / full_thrust_raw))
+                        else:
+                            # Below target speed: use max thrust to accelerate back to the target.
+                            thrust_factor = 1.0
+        except Exception:
+            pass
+
+        # Takeoff + climb (and climb-accel) always max thrust per requirement.
+        try:
+            if segment in (0, 1, 2, 3, 4, 5):
+                thrust_factor = 1.0
+        except Exception:
+            pass
+
+        # Overspeed protection (non-takeoff/climb): if at/above MMO or VMO, pull throttle to avoid further acceleration.
+        try:
+            if segment in (6, 7, 8, 9, 10, 11, 12):
+                m_lim = None
+                try:
+                    m_lim = float(mmo)
+                except Exception:
+                    m_lim = None
+                v_lim = None
+                try:
+                    v_lim = float(vmo)
+                except Exception:
+                    v_lim = None
+
+                m_true = None
+                try:
+                    if c is not None and float(c) > 1e-9:
+                        m_true = float(vktas) / float(c)
+                except Exception:
+                    m_true = None
+
+                over_m = False
+                over_v = False
+                try:
+                    if m_true is not None and m_lim is not None and m_lim > 0:
+                        over_m = (float(m_true) >= 0.999 * float(m_lim))
+                except Exception:
+                    over_m = False
+                try:
+                    if v_lim is not None and v_lim > 0:
+                        over_v = (float(vkias) >= 0.999 * float(v_lim))
+                except Exception:
+                    over_v = False
+
+                if over_m or over_v:
+                    try:
+                        thrust_factor = min(float(thrust_factor), 0.05)
+                    except Exception:
+                        thrust_factor = 0.05
+                    try:
+                        thrust = max(100.0, min(float(thrust), float(drag)))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
         if segment in (0, 6, 7, 13):
             tx = 0
@@ -1197,6 +1328,10 @@ def run_simulation(
                     thrust = 100
                 else:
                     thrust = w * sin(gamma) + drag
+            try:
+                thrust = min(float(thrust), float(max_thrust_available))
+            except Exception:
+                pass
         else:
             tx = (thrust - drag) / w
             if tx > 1:
@@ -1204,6 +1339,11 @@ def run_simulation(
             elif tx < -1:
                 tx = -1
             gamma = np.arcsin(tx)
+
+        try:
+            thrust = min(float(thrust), float(max_thrust_available))
+        except Exception:
+            pass
 
         roc_fps = gamma * v_true_fps / (6076.12 / 3600)
         roc_fpm = roc_fps * 60
